@@ -30,7 +30,7 @@ The utility is written in Python and uses PyQt6 for the interface.
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/VenusProLinux.git
+   git clone https://github.com/Es00bac/VenusProLinux.git
    cd VenusProLinux
    ```
 
