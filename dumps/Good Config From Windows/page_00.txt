@@ -1,0 +1,16 @@
+0000: 04 51 05 50 00 55 00 55 00 55 00 55 0b 0b 00 3f
+0010: 17 17 00 27 2f 2f 00 f7 5f 5f 00 97 bd bd 00 db
+0020: bd bd 00 db bd bd 00 db bd bd 00 db ff 00 00 56
+0030: 00 00 ff 56 00 ff 00 56 ff ff 00 57 ff 55 7d 84
+0040: 92 00 ff c4 ff 7d 7d 5c 7d 7d ff 5c 00 55 80 d5
+0050: 03 52 00 55 ff 00 ff 57 03 52 80 d5 03 52 00 55
+0060: 06 00 fe 51 06 01 ff 4f 06 02 03 4a 08 00 00 4d
+0070: 07 00 00 4e 02 02 00 51 01 02 00 52 01 01 00 53
+0080: 02 03 00 50 02 01 00 52 01 04 00 50 05 00 00 50
+0090: 05 00 00 50 04 32 03 1c 05 00 00 50 05 00 00 50
+00a0: 04 ff 00 00 13 ff 40 00 55 04 00 4c 01 02 00 4c
+00b0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+00c0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+00d0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+00e0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+00f0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff

@@ -122,9 +122,9 @@ def main():
         packets = extract_hid_data(str(path))
         for pkt in packets:
             info = analyze_modifier_key_packet(pkt)
-            if info.get("command") == 0x07:
-                print(f"  RAW: {info['raw']}")
-                if "modifier" in info:
+            if info:  # Print all valid packets
+                print(f"  CMD {info.get('command'):02X}: {info['raw']}")
+                if info.get("command") == 0x07 and "modifier" in info:
                     print(f"    Keycode: 0x{info['keycode']:02x}, Modifier: 0x{info['modifier']:02x}")
                     print(f"    Modifiers: {info['modifier_bits']}")
     
@@ -148,8 +148,8 @@ def main():
         packets = extract_hid_data(str(path))
         for pkt in packets:
             info = analyze_modifier_key_packet(pkt)
-            if info.get("command") == 0x07 and info.get("type") == "rgb_or_config":
-                print(f"  RAW: {info['raw']}")
+            if info:
+                 print(f"  CMD {info.get('command'):02X}: {info['raw']}")
     
     # Analyze Macro captures
     macro_captures = [
@@ -172,8 +172,8 @@ def main():
         packets = extract_hid_data(str(path))
         for pkt in packets:
             info = analyze_modifier_key_packet(pkt)
-            if info.get("command") == 0x07:
-                print(f"  RAW: {info['raw']}")
+            if info:
+                print(f"  CMD {info.get('command'):02X}: {info['raw']}")
 
 
 if __name__ == "__main__":

@@ -287,15 +287,172 @@ DPI levels are stored at page 0x00, offsets 0x0C-0x1C (5 levels, 4 bytes each).
 08 07 00 00 [offset] 04 [dpi_byte] [dpi_byte] 00 [validation] 00 00 00 00 00 00 [chk]
 ```
 
-| DPI Level | Offset |
-|-----------|--------|
-| 1 | 0x0C |
-| 2 | 0x10 |
-| 3 | 0x14 |
-| 4 | 0x18 |
-| 5 | 0x1C |
+| DPI Level | Offset | Example DPI | DPI Byte |
+|-----------|--------|-------------|----------|
+| 1 | 0x0C | 1600 | 0x12 (18) |
+| 2 | 0x10 | 2400 | 0x1B (27) |
+| 3 | 0x14 | 4900 | 0x3A (58) |
+| 4 | 0x18 | 8900 | 0x6A (106) |
+| 5 | 0x1C | 14100 | 0xA8 (168) |
 
-DPI encoding format is still being researched.
+The DPI byte appears twice in the packet. The validation byte follows a checksum pattern.
+
+## Polling Rate Configuration
+
+**Location:** Page 0x00, Offset 0x00
+
+**Formula:**
+```python
+code = int(math.log2(1000 / rate_hz))
+# 125Hz → 0x04, 250Hz → 0x02, 500Hz → 0x01, 1000Hz → 0x00
+```
+
+| Rate (Hz) | Interval (ms) | Code |
+|-----------|---------------|------|
+| 125 | 8 | 0x04 |
+| 250 | 4 | 0x02 |
+| 500 | 2 | 0x01 |
+| 1000 | 1 | 0x00 |
+
+**Packet:**
+```
+08 07 00 00 00 02 [CODE] [VALIDATION] 00 00 00 00 00 00 00 00 [CHK]
+```
+
+## LED Brightness Encoding
+
+Brightness uses a **checksum-based validation** at offset 0x54:
+
+```
+Constraint: B1 + B2 = 0x55 (85 decimal)
+B1 = percent × 3, capped at 255 (min 1)
+B2 = (0x55 - B1) & 0xFF
+```
+
+| Brightness % | B1 | B2 |
+|--------------|------|------|
+| 0% | 0x01 | 0x54 |
+| 10% | 0x1e | 0x37 |
+| 20% | 0x3c | 0x19 |
+| 100% | 0xff | 0x56 |
+
+**LED Mode Codes:**
+- 0x56 = Steady (solid color)
+- 0x57 = Neon (rainbow cycle)
+
+**Full LED packet:**
+```
+08 07 00 00 54 08 [R] [G] [B] [MODE] 01 54 [B1] [B2] 00 00 [CHK]
+```
+
+## Special Button Types
+
+| Type Code | Function |
+|-----------|----------|
+| 0x00 | Disabled |
+| 0x01 | Mouse Button |
+| 0x04 | Special (Fire Key, Triple Click) |
+| 0x05 | Media Key (requires keyboard region) |
+| 0x06 | Macro |
+| 0x07 | Polling Rate Toggle |
+| 0x08 | RGB LED Toggle |
+
+### Macro Repeat Modes
+The binding packet for a macro includes a flag byte that determines its repeat behavior:
+
+| Flag | Mode | Description |
+|------|------|-------------|
+| `0x01` - `0x7F` | Run N Times | Run the macro once (0x01) or up to 127 times. |
+| `0xFE` | Repeat While Held | Loops the macro continuously as long as the button is depressed. |
+| `0xFF` | Loop Until New Key | Loops until any other key or mouse button is pressed. |
+
+### Macro Memory Slots
+Macros are stored in dedicated **384-byte slots** (1.5 pages each).
+
+**Formula for Macro Slot i:**
+- Start Page: `0x03 + (i * 3) // 2`
+- Start Offset: `0x80` if `i` is odd, `0x00` if `i` is even.
+
+| Slot | Start Page | Start Offset | End Page | End Offset |
+|------|------------|--------------|----------|------------|
+| 0 | 0x03 | 0x00 | 0x04 | 0x7F |
+| 1 | 0x04 | 0x80 | 0x05 | 0xFF |
+| 2 | 0x06 | 0x00 | 0x07 | 0x7F |
+| 3 | 0x07 | 0x80 | 0x08 | 0xFF |
+
+### Macro Storage Limit
+Because each slot is strictly 384 bytes, and events take ~10 bytes each:
+- Max Name Length: ~30 bytes (15 UTF-16 chars)
+- Max Events: ~35 characters (350 bytes)
+- **Warning:** Macros longer than 35 characters will be truncated by the Windows utility or will overwrite the next macro in memory.
+
+
+### Special Button Type (0x04) Parameters
+
+Fire Key and Triple Click use type 0x04 with configurable parameters:
+
+```
+08 07 00 00 [OFFSET] 04 04 [DELAY_MS] [REPEAT_COUNT] 00 ... [CHK]
+```
+
+| Example | Delay | Repeat |
+|---------|-------|--------|
+| Triple Click | 50ms (0x32) | 3 (0x03) |
+| Fire Key | 40ms (0x28) | 3 (0x03) |
+
+Both parameters are adjustable (0-255).
+
+## Media Key Codes (USB HID Consumer Page)
+
+Media keys use consumer page codes, not standard keycodes:
+
+| Code | Function |
+|------|----------|
+| 0xCD | Play/Pause |
+| 0xB5 | Next Track |
+| 0xB6 | Previous Track |
+| 0xE2 | Mute |
+| 0xE9 | Volume Up |
+| 0xEA | Volume Down |
+
+**Keyboard region packet for media keys:**
+```
+08 07 00 [PAGE] [OFFSET] 08 02 82 [MEDIA_CODE] 00 42 [MEDIA_CODE] ...
+```
+
+## Macro Event Structure
+
+Macro data is stored on dedicated pages:
+- Button flash_index 0 → Page 0x03
+- Button flash_index 10 → Page 0x18
+- Formula: `page = 0x03 + flash_index`
+
+**Macro Name (Offsets 0x00-0x14):**
+- UTF-16LE encoded, ~22 characters max
+
+**Event Data (Offsets 0x1e+):**
+
+Each 11-byte packet contains one key press cycle:
+```
+0a 00 [DELAY_PREV] [81] [KEYCODE] 00 00 [DELAY_UP] [41] [KEYCODE] 00
+```
+
+| Byte | Description |
+|------|-------------|
+| 0-1 | Header (0x0a 0x00) |
+| 2 | Delay from previous event (ms) |
+| 3 | 0x81 = Key Down flag |
+| 4 | HID Keycode |
+| 5-6 | Padding |
+| 7 | Delay until key up (ms) |
+| 8 | 0x41 = Key Up flag |
+| 9 | HID Keycode (repeated) |
+| 10 | Padding |
+
+**Terminator (Offset 0x64):**
+```
+06 00 03 69 00 00 00 00 00 00 00
+```
 
 ## Known Issues & Quirks
 

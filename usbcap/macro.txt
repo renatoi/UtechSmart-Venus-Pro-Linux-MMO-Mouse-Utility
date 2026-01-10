@@ -1,0 +1,1 @@
+F1-dn 63ms F1-up 140ms F2-dn 63ms  F2-up 140ms F3-dn 78ms F3-up 157ms F4-dn 78ms F4-up 140ms F5-dn 79ms F5-up 140ms F6-dn 78ms F6-up 156ms F7-dn 78ms F7-up 157ms F8-dn 78ms F8-up 156ms F9-dn 63ms F9-up 156ms F10-dn 78ms F10-up 156ms F11-dn 63ms F11-up 156ms F12-dn 63ms F12-up

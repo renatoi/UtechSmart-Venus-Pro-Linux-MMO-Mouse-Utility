@@ -1,0 +1,16 @@
+0000: 43 00 00 9c 81 44 00 00 3f 41 44 00 00 9c 81 45
+0010: 00 00 3f 41 45 00 00 03 5a 00 00 00 ff ff ff ff
+0020: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0030: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0040: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0050: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0060: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0070: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0080: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0090: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+00a0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+00b0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+00c0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+00d0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+00e0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+00f0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff

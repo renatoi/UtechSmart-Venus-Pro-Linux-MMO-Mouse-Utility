@@ -1,0 +1,16 @@
+0000: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0010: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0020: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0030: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0040: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0050: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0060: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0070: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0080: 08 74 00 65 00 73 00 74 00 00 00 00 00 00 00 00
+0090: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 18
+00a0: 81 3a 00 00 3f 41 3a 00 00 8c 81 3b 00 00 3f 41
+00b0: 3b 00 00 8c 81 3c 00 00 4e 41 3c 00 00 9d 81 3d
+00c0: 00 00 4e 41 3d 00 00 8c 81 3e 00 00 4f 41 3e 00
+00d0: 00 8c 81 3f 00 00 4e 41 3f 00 00 9d 81 40 00 00
+00e0: 4e 41 40 00 00 9c 81 41 00 00 4e 41 41 00 00 9c
+00f0: 81 42 00 00 3f 41 42 00 00 9c 81 43 00 00 4e 41
