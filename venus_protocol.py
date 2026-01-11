@@ -5,6 +5,83 @@ from typing import Iterable, Optional
 
 import hid
 import time
+import sys
+
+try:
+    import usb.core
+    import usb.util
+    PYUSB_AVAILABLE = True
+except ImportError:
+    PYUSB_AVAILABLE = False
+
+
+def unlock_device():
+    """
+    Performs the 'Magic Unlock' sequence to enable writing to Macro/Page 3 memory.
+    Requires root permissions to detach kernel driver.
+    """
+    if not PYUSB_AVAILABLE:
+        print("PyUSB not available, skipping unlock.")
+        return False
+
+    print("Attempting to unlock device...")
+    dev = usb.core.find(idVendor=VENDOR_ID, idProduct=PRODUCT_IDS[1]) # FA08 Wireless
+    if dev is None:
+        dev = usb.core.find(idVendor=VENDOR_ID, idProduct=PRODUCT_IDS[0]) # FA07 Wired
+    
+    if dev is None:
+        print("Unlock: No device found.")
+        return False
+
+    # Detach Kernel Driver
+    reattach = []
+    for iface in [0, 1]:
+        if dev.is_kernel_driver_active(iface):
+            try:
+                dev.detach_kernel_driver(iface)
+                reattach.append(iface)
+                print(f"Detached kernel driver from iface {iface}")
+            except Exception as e:
+                print(f"Failed to detach iface {iface}: {e}")
+                return False
+
+    try:
+        usb.util.claim_interface(dev, 1)
+        
+        # Helper to send feature report to Interface 1
+        def send_magic(data):
+            padded = data.ljust(17, b'\x00')
+            dev.ctrl_transfer(0x21, 0x09, 0x0308, 1, padded)
+
+        # 1. Reset (Cmd 09)
+        send_magic(bytes([0x08, 0x09]))
+        time.sleep(0.5)
+        
+        # 2. Magic packet 1 (CMD 4D)
+        # 08 4D 05 50 00 55 00 55 00 55 91
+        send_magic(bytes([0x08, 0x4D, 0x05, 0x50, 0x00, 0x55, 0x00, 0x55, 0x00, 0x55, 0x91]))
+        time.sleep(0.05)
+        
+        # 3. Magic packet 2 (CMD 01)
+        # 08 01 00 00 00 04 56 57 3d 1b 00 00
+        send_magic(bytes([0x08, 0x01, 0x00, 0x00, 0x00, 0x04, 0x56, 0x57, 0x3d, 0x1b, 0x00, 0x00]))
+        time.sleep(0.05)
+        
+        print("Unlock sequence sent.")
+        
+    except Exception as e:
+        print(f"Unlock error: {e}")
+    finally:
+        # Re-attach Check
+        for iface in reattach:
+            try:
+                dev.attach_kernel_driver(iface)
+                print(f"Re-attached kernel driver to iface {iface}")
+            except:
+                pass
+        # Wait for device to re-enumerate after driver re-attach
+        time.sleep(1.0)
+    return True
 
 
 VENDOR_ID = 0x25A7
@@ -123,6 +200,9 @@ DPI_PRESETS = {
 }
 
 
+# Macro Repeat Modes
+# Verified from capture: bind macros 123...
+# D2 byte in Bind Packet (cmd 0x06)
 # Modifier key bit flags (standard HID modifier byte)
 MODIFIER_CTRL = 0x01
 MODIFIER_SHIFT = 0x02
@@ -139,6 +219,8 @@ HID_KEY_USAGE = {
     # Function keys
     "F1": 0x3A, "F2": 0x3B, "F3": 0x3C, "F4": 0x3D, "F5": 0x3E, "F6": 0x3F,
     "F7": 0x40, "F8": 0x41, "F9": 0x42, "F10": 0x43, "F11": 0x44, "F12": 0x45,
+    "F13": 0x68, "F14": 0x69, "F15": 0x6A, "F16": 0x6B, "F17": 0x6C, "F18": 0x6D,
+    "F19": 0x6E, "F20": 0x6F, "F21": 0x70, "F22": 0x71, "F23": 0x72, "F24": 0x73,
     # Special keys
     "Enter": 0x28, "Escape": 0x29, "Backspace": 0x2A, "Tab": 0x2B, "Space": 0x2C,
     "Minus": 0x2D, "Equal": 0x2E, "LeftBracket": 0x2F, "RightBracket": 0x30,
@@ -158,6 +240,9 @@ HID_KEY_USAGE = {
     "Keypad 4": 0x5C, "Keypad 5": 0x5D, "Keypad 6": 0x5E,
     "Keypad 7": 0x5F, "Keypad 8": 0x60, "Keypad 9": 0x61,
     "Keypad 0": 0x62,
+    # Modifiers (for macro support)
+    # Note: Shift uses 0x20 in macro events, NOT 0x02 (which is the HID modifier bit)
+    "Shift": 0x20,  # Left Shift for macro events
 }
 
 # USB HID Consumer Page codes (for media keys)
@@ -214,27 +299,57 @@ ASCII_TO_HID = {
 
 
 
-# Macro Repeat Modes
-MACRO_REPEAT_ONCE = 0x01
-MACRO_REPEAT_HOLD = 0xFE
-MACRO_REPEAT_TOGGLE = 0xFF
+# Macro Repeat Modes (from Windows USB captures)
+MACRO_REPEAT_ONCE = 0x01     # Play macro once
+MACRO_REPEAT_COUNT = 0x02    # Multi-repeat mode (GUI sentinel)
+MACRO_REPEAT_HOLD = 0xFE     # Repeat while button held
+MACRO_REPEAT_TOGGLE = 0xFF   # Toggle on/off
+# Note: Any value 0x01-0xFD is interpreted as a repeat count.
 
+
+# Mapping of Side Buttons (1-12) to internal Macro Slot Indices
+# Derived from USB Capture "macros set to all 12 buttons.pcapng"
+# Gaps exist at 6, 7, 10, 11 (Offsets 0x78, 0x7C, 0x88, 0x8C seem skipped/reserved)
+SIDE_BUTTON_INDICES = [
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05,  # Buttons 1-6
+    0x08, 0x09,                          # Buttons 7-8
+    0x0C, 0x0D, 0x0E, 0x0F               # Buttons 9-12
+]
 
 
 def calc_checksum(prefix: Iterable[int]) -> int:
     return (CHECKSUM_BASE - (sum(prefix) & 0xFF)) & 0xFF
 
 
-def build_report(command: int, payload: bytes) -> bytes:
-    if len(payload) != 14:
-        raise ValueError(f"payload must be 14 bytes, got {len(payload)}")
-    data = bytearray([REPORT_ID, command, *payload])
-    data.append(calc_checksum(data))
-    return bytes(data)
-
+def build_report(command: int, payload: Iterable[int]) -> bytes:
+    """Builds a 17-byte HID report with checksum at byte 16."""
+    r = bytearray(REPORT_LEN)
+    r[0] = REPORT_ID
+    r[1] = command
+    
+    # Payload
+    payload_bytes = bytes(payload)
+    plen = min(len(payload_bytes), 14)
+    r[2:2+plen] = payload_bytes[:plen]
+    
+    # Packet Checksum
+    s_sum = sum(r[0:16]) & 0xFF
+    r[16] = (CHECKSUM_BASE - s_sum) & 0xFF
+    return bytes(r)
 
 def build_simple(command: int) -> bytes:
     return build_report(command, bytes(14))
+
+
+def build_flash_write(page: int, offset: int, data: bytes) -> bytes:
+    """Generic flash write packet (Cmd 0x07).
+    
+    Payload: [0x00, Page, Offset, Len, Data...]
+    Data is padded to 10 bytes.
+    """
+    dlen = len(data)
+    payload = bytes([0x00, page & 0xFF, offset & 0xFF, dlen & 0xFF]) + data.ljust(10, b'\x00')
+    return build_report(0x07, payload)
 
 
 def build_flash_read(page: int, offset: int, length: int) -> bytes:
@@ -413,6 +528,34 @@ def build_apply_binding(apply_offset: int, action_type: int, action_code: int, a
     return build_report(0x07, payload)
 
 
+def build_keyboard_bind(apply_offset: int, page: int = 0x00) -> bytes:
+    """Build a standard keyboard binding packet (Type 05).
+    
+    This binds the button (at apply_offset) to the Key Definition stored in Page N.
+    Format:
+    [00] [Page] [Offset] [Len=04] [Type=05] [D1=00] [D2=00] [D3=Chk] ...
+    
+    Inner Checksum (D3) = 0x55 - (Type + D1 + D2)
+    """
+    btype = BUTTON_TYPE_KEYBOARD # 0x05
+    d1 = 0x00
+    d2 = 0x00
+    d3 = (0x55 - (btype + d1 + d2)) & 0xFF # 0x50
+    
+    payload = bytes([
+        0x00,
+        page,
+        apply_offset,
+        0x04,
+        btype,
+        d1,
+        d2,
+        d3,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    ])
+    return build_report(0x07, payload)
+
+
 def build_mouse_param(apply_offset: int, val: int, page: int = 0x00) -> bytes:
     """Build a mouse button binding (Left/Right/etc).
     
@@ -494,20 +637,25 @@ def build_special_binding(apply_offset: int, delay_ms: int, repeat_count: int, p
         repeat_count: Number of repeats (0-255)
         page: Memory page (0x00 for Profile 1, 0x40 for Profile 2, etc.)
     
-    From wired USB captures:
-    - Triple Click (btn 4): type=0x04, data=0x32 0x03 (delay=50ms, repeat=3)
-    - Fire Key (btn 7): type=0x04, data=0x28 0x03 (delay=40ms, repeat=3)
+    Format from Windows capture:
+    - Type = 0x04, D1 = delay_ms, D2 = repeat_count
+    - D3 = 0x55 - (Type + D1 + D2)
     """
+    btype = BUTTON_TYPE_SPECIAL  # 0x04
+    d1 = delay_ms & 0xFF
+    d2 = repeat_count & 0xFF
+    d3 = (0x55 - (btype + d1 + d2)) & 0xFF
+    
     payload = bytes(
         [
             0x00,
             page,
             apply_offset,
-            0x04,  # Marker
-            BUTTON_TYPE_SPECIAL,  # 0x04 = Special (fire/triple click)
-            delay_ms & 0xFF,
-            repeat_count & 0xFF,
-            0x00,  # Unknown, possibly validation
+            0x04,  # Length
+            btype,
+            d1,
+            d2,
+            d3,
             0x00,
             0x00,
             0x00,
@@ -521,16 +669,20 @@ def build_special_binding(apply_offset: int, delay_ms: int, repeat_count: int, p
 
 def build_poll_rate_toggle(apply_offset: int, page: int = 0x00) -> bytes:
     """Build a polling rate toggle binding for a button."""
+    btype = BUTTON_TYPE_POLL_RATE  # 0x07
+    d1, d2 = 0x00, 0x00
+    d3 = (0x55 - (btype + d1 + d2)) & 0xFF  # = 0x4E
+    
     payload = bytes(
         [
             0x00,
             page,
             apply_offset,
             0x04,
-            BUTTON_TYPE_POLL_RATE,  # 0x07
-            0x00,
-            0x00,
-            0x00,
+            btype,
+            d1,
+            d2,
+            d3,
             0x00,
             0x00,
             0x00,
@@ -544,16 +696,20 @@ def build_poll_rate_toggle(apply_offset: int, page: int = 0x00) -> bytes:
 
 def build_rgb_toggle(apply_offset: int, page: int = 0x00) -> bytes:
     """Build an RGB LED toggle binding for a button."""
+    btype = BUTTON_TYPE_RGB_TOGGLE  # 0x08
+    d1, d2 = 0x00, 0x00
+    d3 = (0x55 - (btype + d1 + d2)) & 0xFF  # = 0x4D
+    
     payload = bytes(
         [
             0x00,
             page,
             apply_offset,
             0x04,
-            BUTTON_TYPE_RGB_TOGGLE,  # 0x08
-            0x00,
-            0x00,
-            0x00,
+            btype,
+            d1,
+            d2,
+            d3,
             0x00,
             0x00,
             0x00,
@@ -593,12 +749,20 @@ class MacroEvent:
     keycode: int
     is_down: bool
     delay_ms: int
+    is_modifier: bool = False  # Modifiers use different status codes
 
     def to_bytes(self) -> bytes:
         """Convert to the 5-byte format expected by the mouse hardware.
         Format from memory dumps: [STATUS] [KEYCODE] 0x00 [DELAY_HI] [DELAY_LO]
+        
+        Status codes:
+        - 0x81 = Key Down, 0x41 = Key Up (regular keys)
+        - 0x80 = Modifier Down, 0x40 = Modifier Up (Shift, Ctrl, Alt)
         """
-        status = 0x81 if self.is_down else 0x41
+        if self.is_modifier:
+            status = 0x80 if self.is_down else 0x40
+        else:
+            status = 0x81 if self.is_down else 0x41
         return bytes([status, self.keycode, 0x00, (self.delay_ms >> 8) & 0xFF, self.delay_ms & 0xFF])
 
 
@@ -643,73 +807,50 @@ def get_macro_page(apply_offset: int) -> int:
     return 0x03 + flash_index
 
 
-def build_macro_terminator(offset: int, macro_page: int = 0x03) -> bytes:
-    """Build the macro terminator found in memory dumps.
-    Format: [00, 03, OFFSET, 00, 00, 00]
+def build_macro_terminator(offset: int, checksum: int, macro_page: int = 0x03) -> bytes:
+    """Build the macro terminator write packet.
+
+    IMPORTANT: The terminator is 4 bytes: [checksum] [00] [00] [00]
+    The 0x03 seen in memory dumps is the LAST EVENT's delay (3ms), NOT part of terminator!
+
+    Args:
+        offset: Byte offset where terminator should be written (after last event)
+        checksum: Calculated checksum using formula: (~sum(data) - count + (index+1)^2) & 0xFF
+        macro_page: Memory page for macro storage
     """
-    tail = bytes([0x00, 0x03, offset & 0xFF, 0x00, 0x00, 0x00])
+    tail = bytes([checksum, 0x00, 0x00, 0x00])
     return build_macro_chunk(offset, tail, macro_page)
 
 
-def build_macro_bind(apply_offset: int, macro_index: int = 0x01, repeat_mode: int = MACRO_REPEAT_ONCE, page: int = 0x00) -> bytes:
+def build_macro_bind(apply_offset: int, index: int, repeat: int = 0x01, page: int = 0x00) -> bytes:
     """Build a macro bind packet.
     
-    From USB captures:
-    - Button 1 (offset 0x60): 08 07 00 00 60 04 06 00 01 4e
-    - Button 11 (offset 0x98): 08 07 00 00 98 04 06 0e 01 40
-    
-    The flash_index is derived from apply_offset and included in the packet.
-    Action code = 0x4E - flash_index
+    Verified from captures:
+    - Type = 0x06 (Macro)
+    - D1 = macro slot index (0-based)
+    - D2 = repeat count (1-253) or mode (0xFE=Hold, 0xFF=Toggle)
+    - Chk = 0x55 - sum(bytes 0-2)
     """
-    # Calculate flash_index from apply_offset
-    # Simple linear formula: flash_index = (apply_offset - 0x60) / 4
-    # From captures: Button 1 (0x60) -> index 0, Button 11 (0x98) -> index 14
-    flash_index = (apply_offset - 0x60) // 4
-    
-    action_code = (0x4E - flash_index) & 0xFF
-    
-    # Payload must be exactly 14 bytes for build_report
-    # Structure: [00, Page, offset] [len] [type] [macro] [action] [repeat] [padding...]
-    payload_list = [
-        0x00,
-        page,
-        apply_offset,
-        0x04,  # Length field in packet
-        0x06,  # Type: macro
-        macro_index & 0xFF,
-        action_code,
-        repeat_mode & 0xFF,
-    ]
-    # Pad with zeros to 14 bytes
-    while len(payload_list) < 14:
-        payload_list.append(0x00)
-        
-    return build_report(0x07, bytes(payload_list))
+    btype = 0x06
+    chk = (0x55 - (btype + index + repeat)) & 0xFF
+    data = bytes([btype, index, repeat, chk, 0x00, 0x00, 0x00, 0x00])
+    return build_flash_write(0x00, apply_offset, data)
+
 
 def get_macro_slot_info(macro_index: int) -> tuple[int, int]:
     """Get the start page and offset for a macro slot.
     
-    Each slot is 384 bytes (1.5 pages).
-    Formula:
-    - Start Page: 0x03 + (i * 3) // 2
-    - Start Offset: 0x80 if i is odd, 0x00 if i is even
+    Each slot is 384 bytes (0x180).
+    Base Address for Macro 0 (Index 0) is Page 0x03, Offset 0x00 (0x300).
     """
-    # Ensure 1-based index is converted to 0-based for calc, or assume 0-based?
-    # GUI uses 1-12. The protocol packet uses 0x01-0x0C? Captures show "macro_index" in bind packet.
-    # In captures: "apply macro _testing_ to side button 1" -> bind packet has '01' at index 7.
-    # So macro indices are 1-based in the UI/bind packet.
-    # But for calculation we probably want 0-based offset so macro 1 starts at 0x03.
+    base_addr = 0x300
+    stride = 0x180
     
-    # Correction: Memory dump shows "arrows" (Macro 1?) at Page 3.
-    # "poopypants" (Macro 2?) at Page 4 Offset 0x80.
+    abs_addr = base_addr + (macro_index * stride)
     
-    idx = macro_index - 1 # Convert to 0-based
-    if idx < 0: idx = 0
-    
-    page = 0x03 + (idx * 3) // 2
-    offset = 0x80 if (idx % 2 != 0) else 0x00
+    page = (abs_addr >> 8) & 0xFF
+    offset = abs_addr & 0xFF
     return page, offset
-
 
 
 def build_dpi(slot_index: int, value: int, tweak: int) -> bytes:
@@ -745,6 +886,7 @@ class DeviceInfo:
     vendor_id: int
     product_id: int
     serial: str
+    interface_number: int = 0  # Added to track interface
 
 
 def list_devices(exclude_receivers: bool = True) -> list[DeviceInfo]:
@@ -753,19 +895,20 @@ def list_devices(exclude_receivers: bool = True) -> list[DeviceInfo]:
     for item in hid.enumerate(VENDOR_ID, 0):
         if item["product_id"] not in PRODUCT_IDS:
             continue
-        # win.md: Use HID interface 1 for configuration commands.
-        if item["interface_number"] != 1:
-            continue
-        
-        path_str = item["path"].decode() if isinstance(item["path"], bytes) else item["path"]
-        if path_str in seen_paths:
-            continue
         
         product = item.get("product_string") or "Unknown"
         
-        # Filter out "Wireless Receiver" if requested, as it doesn't support flash reads
+        # Filter out "Wireless Receiver" if requested, as it doesn't support configuration
         if exclude_receivers and "Receiver" in product:
             continue
+        
+        # Prefer "Dual Mode Mouse" on Interface 0 (the actual configurable device)
+        # Also accept Interface 1 for compatibility with some firmware versions
+        interface = item.get("interface_number", -1)
+        if interface not in [0, 1]:
+            continue
+        
+        path_str = item["path"].decode() if isinstance(item["path"], bytes) else item["path"]
             
         seen_paths.add(path_str)
 
@@ -777,11 +920,12 @@ def list_devices(exclude_receivers: bool = True) -> list[DeviceInfo]:
                 vendor_id=item["vendor_id"],
                 product_id=item["product_id"],
                 serial=item.get("serial_number") or "",
+                interface_number=interface,
             )
         )
         
-    # Sort devices to put "Dual Mode Mouse" first if present
-    devices.sort(key=lambda d: 0 if "Dual Mode Mouse" in d.product else 1)
+    # Sort devices: Interface 1 first (for testing writes), then Interface 0
+    devices.sort(key=lambda d: d.interface_number, reverse=True)
     
     return devices
 
@@ -811,6 +955,49 @@ class VenusDevice:
         if len(report) != REPORT_LEN:
             raise ValueError(f"report must be {REPORT_LEN} bytes")
         self._dev.send_feature_report(report)
+
+    def send_reliable(self, report: bytes, timeout_ms: int = 500) -> bool:
+        """Sends a Feature Report (0x08) and waits for acknowledgment (0x09)."""
+        self.send(report)
+        
+        cmd = report[1]
+        # For bulk writes (Cmd 07), we also want to match Page and Offset if possible
+        page = report[3]
+        off = report[4]
+        
+        start = time.time()
+        while (time.time() - start) * 1000 < timeout_ms:
+            resp = self._dev.read(64, timeout_ms=50)
+            if resp and resp[0] == 0x09 and resp[1] == cmd:
+                # If it's a memory write, verify page/offset too
+                if cmd == 0x07:
+                    if resp[3] == page and resp[4] == off:
+                        return True
+                else:
+                    return True
+        return False
+
+    def unlock(self) -> bool:
+        """Sends the Magic Unlock sequence (Cmd 09, 4D, 01) reliably."""
+        if self._dev is None:
+            return False
+            
+        try:
+            # 1. Reset (Cmd 09)
+            self.send_reliable(build_simple(0x09))
+            
+            # 2. Magic Packet 1 (Cmd 4D)
+            magic1 = bytes([0x08, 0x4D, 0x05, 0x50, 0x00, 0x55, 0x00, 0x55, 0x00, 0x55, 0x91])
+            self.send_reliable(magic1.ljust(17, b'\x00'))
+            
+            # 3. Magic Packet 2 (Cmd 01)
+            magic2 = bytes([0x08, 0x01, 0x00, 0x00, 0x00, 0x04, 0x56, 0x57, 0x3d, 0x1b, 0x00, 0x00])
+            self.send_reliable(magic2.ljust(17, b'\x00'))
+            
+            return True
+        except Exception as e:
+            print(f"Unlock failed: {e}")
+            return False
 
     def read_flash(self, page: int, offset: int, length: int) -> bytes:
         """Read 8 bytes from flash memory at the given page and offset.
@@ -843,3 +1030,42 @@ class VenusDevice:
                     return bytes(resp[6 : 6 + data_len])
         
         raise RuntimeError(f"Flash read timeout at Page=0x{page:02X} Offset=0x{offset:02X}")
+
+
+def calculate_terminator_checksum(
+    data: bytes,
+    event_count: int | None = None,
+) -> int:
+    """
+    Calculate the macro terminator checksum.
+
+    Verified from working Windows macros:
+      checksum = (~sum(events) - event_count + 0x56) & 0xFF
+    """
+    if event_count is None:
+        event_count = data[0x1F] if len(data) > 0x1F else 0
+
+    events_start = 0x20
+    events_end = events_start + (event_count * 5)
+    if events_end > len(data):
+        events = data[events_start:]
+    else:
+        events = data[events_start:events_end]
+
+    s_sum = sum(events) & 0xFF
+    inv_sum = (~s_sum) & 0xFF
+    return (inv_sum - event_count + 0x56) & 0xFF
+
+
+def get_macro_slot_info(index: int) -> tuple[int, int]:
+    """Returns (page, offset) for a given macro index (0-based).
+    Stride is 384 bytes (0x180), NOT 256 bytes.
+    Base Address is 0x300 (Page 3, Offset 0).
+    """
+    base_addr = 0x300
+    stride = 0x180
+    abs_addr = base_addr + (index * stride)
+    
+    page = (abs_addr >> 8) & 0xFF
+    offset = abs_addr & 0xFF
+    return page, offset

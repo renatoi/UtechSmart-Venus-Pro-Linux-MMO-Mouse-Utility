@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import sys
+import json
+import time
 from pathlib import Path
 
 from PyQt6 import QtCore, QtGui, QtWidgets
+
+try:
+    import evdev
+    from evdev import UInput, ecodes as e
+    EVDEV_AVAILABLE = True
+except ImportError:
+    EVDEV_AVAILABLE = False
 
 import venus_protocol as vp
 
@@ -17,16 +26,138 @@ DEFAULT_MACRO_EVENTS_HEX = (
 DEFAULT_MACRO_TAIL_HEX = "000369000000"
 
 
+class MacroRunner(QtCore.QThread):
+    """
+    Background service that listens for specific trigger keys (F13-F24)
+    from the Venus Mouse and executes associated software macros.
+    """
+    log_signal = QtCore.pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.running = False
+        self.macros = {} # Key Code (int) -> List of Events
+        self.uinput = None
+        self.phys_dev = None
+
+    def load_macros(self, macro_map):
+        """
+        macro_map: dict of {TriggerKeyName: MacroEventList}
+        Example: {"F13": [...], "F14": [...]}
+        """
+        self.macros = {}
+        if not EVDEV_AVAILABLE:
+            return
+
+        for key_name, events in macro_map.items():
+            # Resolve key name to Linux Key Code
+            # F13 -> KEY_F13 (183)
+            # We use evdev.ecodes
+            try:
+                # evdev keys are like 'KEY_F13'
+                ecode_name = f"KEY_{key_name.upper()}"
+                code = getattr(e, ecode_name, None)
+                if code:
+                    self.macros[code] = events
+            except Exception:
+                pass
+
+    def run(self):
+        if not EVDEV_AVAILABLE:
+            self.log_signal.emit("MacroRunner: evdev not found. Software macros disabled.")
+            return
+
+        self.running = True
+        
+        # 1. Find Device (UtechSmart)
+        self.log_signal.emit("MacroRunner: Scanning for device...")
+        target_path = None
+        
+        # Simple scan
+        try:
+            devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+            for dev in devices:
+                if "Venus" in dev.name or "2.4G" in dev.name:
+                    # Check if it has keys?
+                    caps = dev.capabilities()
+                    if e.EV_KEY in caps:
+                        self.log_signal.emit(f"MacroRunner: Found {dev.name} at {dev.path}")
+                        target_path = dev.path
+                        break
+        except Exception as exc:
+            self.log_signal.emit(f"MacroRunner: Scan error {exc}")
+            return
+
+        if not target_path:
+            self.log_signal.emit("MacroRunner: Mouse input device not found.")
+            return
+
+        # 2. Setup UInput (Virtual Keyboard for playback)
+        try:
+            self.phys_dev = evdev.InputDevice(target_path)
+            # Create uinput device with ALL keys capability
+            cap = {
+                e.EV_KEY: list(range(0, 500)), # Enable all keys
+                e.EV_REL: [e.REL_X, e.REL_Y, e.REL_WHEEL],
+                e.EV_ABS: []
+            }
+            self.uinput = UInput(cap, name="Venus Macro Injector")
+            self.log_signal.emit("MacroRunner: Virtual Injector Created.")
+        except Exception as exc:
+             self.log_signal.emit(f"MacroRunner: Setup error {exc}")
+             return
+
+        # 3. Loop
+        self.log_signal.emit("MacroRunner: Listening for Triggers...")
+        try:
+            # Exclusive grab? No, passive listen.
+            for event in self.phys_dev.read_loop():
+                if not self.running:
+                    break
+                
+                if event.type == e.EV_KEY and event.value == 1: # Key Down
+                    if event.code in self.macros:
+                        self.log_signal.emit(f"MacroRunner: Trigger {event.code} detected!")
+                        self.play_macro(self.macros[event.code])
+                        
+        except Exception as exc:
+            self.log_signal.emit(f"MacroRunner: Loop error {exc}")
+        finally:
+            if self.uinput:
+                self.uinput.close()
+
+    def play_macro(self, events):
+        """
+        Replay events using uinput.
+        Events is a list of dicts/objects from the GUI editor.
+        Protocol events are: [Type, Code, Value?]
+        We need to map internal GUI format to Linux Keys.
+        GUI format: (Type=Mouse/Key, Code=HID_USAGE, Value=Down/Up)
+        We need HID_USAGE -> LINUX_KEY_CODE mapping.
+        """
+        # Mapping HID to Linux is painful.
+        # HID 0x04 (A) -> KEY_A (30)
+        # We can implement a small mapper or use evdev's ecodes if names match?
+        # Protocol keys: vp.HID_KEY_USAGE["A"] = 0x04
+        # We'll need a lookup.
+        pass # To be implemented in detail
+    
+    def stop(self):
+        self.running = False
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Venus Pro Config (Reverse Engineering)")
         self.resize(1200, 780)
 
-        self.device: vp.VenusDevice | None = None
+        # Store device path instead of keeping device open (prevents blocking mouse input)
+        self.device_path: str | None = None
         self.device_infos: list[vp.DeviceInfo] = []
         self.custom_profiles: dict[str, tuple[int, int, int]] = {}
         self.button_assignments: dict[str, dict] = {} # Stored button settings from device
+
 
         root = QtWidgets.QWidget()
         self.setCentralWidget(root)
@@ -52,6 +183,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.button_assignments = {}
         self._initialize_default_assignments()
 
+        # Attempt to unlock device (requires root, but try anyway)
+        # This will freeze mouse momentarily
+        if vp.PYUSB_AVAILABLE:
+            print("Running Startup Unlock...")
+            vp.unlock_device()
 
         self._refresh_and_connect()
 
@@ -83,6 +219,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.read_button.clicked.connect(self._read_settings)
         self.export_button.clicked.connect(self._export_profile)
         self.import_button.clicked.connect(self._import_profile)
+        
+        # Factory Reset button
+        self.reset_button = QtWidgets.QPushButton("⚠️ Factory Reset")
+        self.reset_button.setStyleSheet("background-color: #cc4444; color: white; font-weight: bold; padding: 8px;")
+        self.reset_button.clicked.connect(self._factory_reset)
+        layout.addWidget(self.reset_button)
+
         # Remove old connect/disconnect/reset buttons from here
 
         return group
@@ -140,7 +283,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.editor_layout.setContentsMargins(10, 0, 0, 0)
         
         # Reverse map for key names
-        self.HID_USAGE_TO_NAME = {v: k for k, v in vp.HID_KEY_USAGE.items()}
+        # Preserve first mapping to avoid macro-only "Shift" (0x20) overriding "3".
+        self.HID_USAGE_TO_NAME = {}
+        for key_name, code in vp.HID_KEY_USAGE.items():
+            if code not in self.HID_USAGE_TO_NAME:
+                self.HID_USAGE_TO_NAME[code] = key_name
         
         self.editor_label = QtWidgets.QLabel("Select a button to edit")
 
@@ -188,10 +335,20 @@ class MainWindow(QtWidgets.QMainWindow):
         # Macro Repeat Mode
         self.macro_repeat_combo = QtWidgets.QComboBox()
         self.macro_repeat_combo.addItem("Run Once", vp.MACRO_REPEAT_ONCE)
+        self.macro_repeat_combo.addItem("Repeat Count", 0x02) # Sentinel for count
         self.macro_repeat_combo.addItem("Repeat While Held", vp.MACRO_REPEAT_HOLD)
-        self.macro_repeat_combo.addItem("Loop Until Key", vp.MACRO_REPEAT_TOGGLE)
-        macro_layout.addRow("Repeat:", self.macro_repeat_combo)
+        self.macro_repeat_combo.addItem("Loop Until Toggle", vp.MACRO_REPEAT_TOGGLE)
+        macro_layout.addRow("Repeat Mode:", self.macro_repeat_combo)
         
+        self.macro_repeat_count = QtWidgets.QSpinBox()
+        self.macro_repeat_count.setRange(1, 253)
+        self.macro_repeat_count.setVisible(False)
+        macro_layout.addRow("Repeat Count:", self.macro_repeat_count)
+        
+        self.macro_repeat_combo.currentIndexChanged.connect(
+            lambda: self.macro_repeat_count.setVisible(self.macro_repeat_combo.currentData() == 0x02)
+        )
+
         # Macro Recall
         self.load_macro_btn = QtWidgets.QPushButton("Load from Slot")
         self.load_macro_btn.clicked.connect(self._load_macro_from_slot)
@@ -239,9 +396,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dpi_group = QtWidgets.QWidget()
         dpi_layout = QtWidgets.QHBoxLayout(self.dpi_group)
         self.dpi_action_select = QtWidgets.QComboBox()
-        self.dpi_action_select.addItem("DPI Loop (Shift+6)", 0x02) # D1=02
-        self.dpi_action_select.addItem("DPI + (Ctrl+Shift+7)", 0x03) # D1=03
-        self.dpi_action_select.addItem("DPI - (Ctrl+8)", 0x01) # D1=01
+        self.dpi_action_select.addItem("DPI Loop", 0x01) # D1=01
+        self.dpi_action_select.addItem("DPI +", 0x02)    # D1=02
+        self.dpi_action_select.addItem("DPI -", 0x03)    # D1=03
         dpi_layout.addWidget(QtWidgets.QLabel("DPI Function:"))
         dpi_layout.addWidget(self.dpi_action_select)
         
@@ -385,10 +542,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.mod_win.setChecked(bool(mod & vp.MODIFIER_WIN))
         elif action == "Macro":
             self.macro_index_spin.setValue(params.get("index", 1))
-        elif action in ["Fire Key", "Triple Click"]:
-            self.special_delay_spin.setValue(params.get("delay", 40))
-            self.special_repeat_spin.setValue(params.get("repeat", 3))
-
+            # Set repeat mode
+            mode_data = params.get("mode", vp.MACRO_REPEAT_ONCE)
+            idx = self.macro_repeat_combo.findData(mode_data)
+            if idx >= 0: 
+                self.macro_repeat_combo.setCurrentIndex(idx)
+            else:
+                # If not found, it must be a custom count (1-FD)
+                idx_count = self.macro_repeat_combo.findData(0x02)
+                if idx_count >= 0: self.macro_repeat_combo.setCurrentIndex(idx_count)
+            
+            self.macro_repeat_count.setValue(params.get("mode", 1) if isinstance(params.get("mode", 1), int) else 1)
 
     def _update_bind_ui(self, action: str) -> None:
         """Show/hide UI elements based on selected action."""
@@ -397,6 +561,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.special_group.setVisible(action in ["Fire Key", "Triple Click"])
         self.media_group.setVisible(action == "Media Key")
         
+        # Enable/disable repeat count based on repeat mode
+        if action == "Macro":
+            mode = self.macro_repeat_combo.currentData()
+            self.macro_repeat_count.setVisible(mode == 0x02)
+        else:
+            self.macro_repeat_count.setVisible(False)
+
         if action == "Fire Key":
             self.special_delay_spin.setValue(40)
             self.special_repeat_spin.setValue(3)
@@ -516,7 +687,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         bind_layout.addWidget(QtWidgets.QLabel("Macro Index:"), 0, 2)
         self.macro_bind_index_spin = QtWidgets.QSpinBox()
-        self.macro_bind_index_spin.setRange(1, 8)
+        self.macro_bind_index_spin.setRange(1, 12)
         self.macro_bind_index_spin.setValue(1)
         bind_layout.addWidget(self.macro_bind_index_spin, 0, 3)
 
@@ -525,8 +696,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.macro_tab_repeat_combo.addItem("Run Once", vp.MACRO_REPEAT_ONCE)
         self.macro_tab_repeat_combo.addItem("Repeat While Held", vp.MACRO_REPEAT_HOLD)
         self.macro_tab_repeat_combo.addItem("Loop Until Key", vp.MACRO_REPEAT_TOGGLE)
+        self.macro_tab_repeat_combo.addItem("Repeat Count", vp.MACRO_REPEAT_COUNT) # New option
         bind_layout.addWidget(self.macro_tab_repeat_combo, 0, 5)
 
+        bind_layout.addWidget(QtWidgets.QLabel("Repeat Count:"), 1, 0) # New row for repeat count
+        self.macro_tab_repeat_count_spin = QtWidgets.QSpinBox()
+        self.macro_tab_repeat_count_spin.setRange(1, 253)
+        self.macro_tab_repeat_count_spin.setValue(1)
+        self.macro_tab_repeat_count_spin.setEnabled(False) # Initially disabled
+        bind_layout.addWidget(self.macro_tab_repeat_count_spin, 1, 1)
+
+        # Connect repeat combo to enable/disable repeat count spinbox
+        self.macro_tab_repeat_combo.currentIndexChanged.connect(
+            lambda: self.macro_tab_repeat_count_spin.setEnabled(self.macro_tab_repeat_combo.currentData() == vp.MACRO_REPEAT_COUNT)
+        )
 
         upload_button = QtWidgets.QPushButton("Upload Macro")
         upload_button.clicked.connect(self._upload_macro)
@@ -535,9 +718,9 @@ class MainWindow(QtWidgets.QMainWindow):
         load_button = QtWidgets.QPushButton("Load from Device")
         load_button.clicked.connect(self._load_macro_from_slot_on_tab)
 
-        bind_layout.addWidget(upload_button, 1, 0, 1, 2)
-        bind_layout.addWidget(bind_button, 1, 2, 1, 2)
-        bind_layout.addWidget(load_button, 1, 4, 1, 2)
+        bind_layout.addWidget(upload_button, 2, 0, 1, 2)
+        bind_layout.addWidget(bind_button, 2, 2, 1, 2)
+        bind_layout.addWidget(load_button, 2, 4, 1, 2)
 
         layout.addWidget(bind_group)
         layout.addStretch()
@@ -632,7 +815,7 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         return key_map.get(qt_key)
 
-    def _add_event_to_table(self, key_name: str, is_down: bool, delay: int) -> None:
+    def _add_event_to_table(self, key_name: str, is_down: bool, delay: int, is_modifier: bool = False) -> None:
         """Add an event row to the macro event table."""
         row = self.macro_event_table.rowCount()
         self.macro_event_table.insertRow(row)
@@ -642,9 +825,10 @@ class MainWindow(QtWidgets.QMainWindow):
         num_item.setFlags(num_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
         self.macro_event_table.setItem(row, 0, num_item)
 
-        # Key name
+        # Key name (store is_modifier flag)
         key_item = QtWidgets.QTableWidgetItem(key_name)
         key_item.setFlags(key_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+        key_item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, is_modifier)  # Store modifier flag
         self.macro_event_table.setItem(row, 1, key_item)
 
         # Action
@@ -785,13 +969,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
             key_name = key_item.text()
             is_down = action_item.data(QtCore.Qt.ItemDataRole.UserRole)
+            is_modifier = key_item.data(QtCore.Qt.ItemDataRole.UserRole + 1) or False
             delay = delay_widget.value() if delay_widget else 0
-
+            
             if key_name in vp.HID_KEY_USAGE:
                 events.append(vp.MacroEvent(
                     keycode=vp.HID_KEY_USAGE[key_name],
                     is_down=is_down,
-                    delay_ms=delay
+                    delay_ms=delay,
+                    is_modifier=is_modifier
                 ))
         return events
 
@@ -934,13 +1120,6 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addRow("Full report hex (17 bytes):", self.adv_raw)
         layout.addRow("", send_raw)
         
-        # Factory Reset button
-        layout.addRow("", QtWidgets.QLabel(""))  # Spacer
-        reset_button = QtWidgets.QPushButton("⚠️ Factory Reset")
-        reset_button.setStyleSheet("background-color: #cc4444; color: white; font-weight: bold; padding: 8px;")
-        reset_button.clicked.connect(self._factory_reset)
-        layout.addRow("", reset_button)
-        
         return widget
 
     def _build_log(self) -> QtWidgets.QGroupBox:
@@ -1006,12 +1185,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.device_combo.clear()
         if not self.device_infos:
             self.device_combo.addItem("No Venus Pro devices found")
+            self.device_path = None
             return
         for info in self.device_infos:
             label = f"{info.product} (0x{info.product_id:04x}) {info.serial}".strip()
             self.device_combo.addItem(label, info)
+        # Store path of first device for transient connections
+        self.device_path = self.device_infos[0].path
 
     def _connect_device(self) -> None:
+        """Legacy function - now just stores device path."""
         if not self.device_infos:
             QtWidgets.QMessageBox.warning(self, "No device", "No supported devices detected.")
             return
@@ -1019,397 +1202,390 @@ class MainWindow(QtWidgets.QMainWindow):
         if info is None:
             QtWidgets.QMessageBox.warning(self, "No device", "Pick a device entry first.")
             return
-        try:
-            self.device = vp.VenusDevice(info.path)
-            self.device.open()
-            self.status_label.setText("Connected")
-            self._log(f"Connected to {info.product} ({info.serial})")
-        except Exception as exc:
-            self.device = None
-            QtWidgets.QMessageBox.critical(self, "Connect failed", str(exc))
+        self.device_path = info.path
+        self.status_label.setText(f"Ready: {info.product}")
+        self._log(f"Device selected: {info.product} ({info.serial})")
 
     def _disconnect_device(self) -> None:
-        if self.device is None:
-            return
-        self.device.close()
-        self.device = None
+        """Legacy function - just clears device path."""
+        self.device_path = None
         self.status_label.setText("Disconnected")
-        self._log("Disconnected")
+        self._log("Device cleared")
 
     def _refresh_and_connect(self) -> None:
-        """Refresh devices and attempt to connect."""
+        """Refresh devices and store path for transient connections."""
         self._refresh_devices()
-        self._auto_connect()
+        if self.device_infos:
+            info = self.device_infos[0]
+            self.device_path = info.path
+            self.status_label.setText(f"Ready: {info.product}")
+            self._log(f"Found device: {info.product}")
+            # Auto-read settings on startup
+            self._read_settings()
+        else:
+            self.status_label.setText("No device found")
 
     def _auto_connect(self) -> None:
-        """Automatically connect to the first available device and read settings."""
-        if not self.device_infos:
-            self.status_label.setText("No device found")
-            return
-        
-        # Already connected?
-        if self.device:
-            return
-
-        info = self.device_infos[0]
-        try:
-            self.device = vp.VenusDevice(info.path)
-            self.device.open()
-            self.status_label.setText(f"Connected: {info.product}")
-            self._log(f"Auto-connected to {info.product}")
-            self._read_settings() # Auto-read on connect
-        except Exception as exc:
-            self.device = None
-            self.status_label.setText("Connection failed")
-            self._log(f"Auto-connect failed: {exc}")
+        """Legacy function - handled by _refresh_and_connect now."""
+        pass
 
     def _require_device(self, auto_mode: bool = False) -> bool:
-        if self.device is None:
-            # Try to auto-connect first
-            self._refresh_and_connect()
+        """Check if a device path is available for transient connections."""
+        if self.device_path is None:
+            # Try to refresh and find devices
+            self._refresh_devices()
             
-        if self.device is None:
-            if not auto_mode: # Only show warnings for user-initiated actions, not lazy background checks
-                QtWidgets.QMessageBox.warning(self, "No device", "Could not connect to device.")
+        if self.device_path is None:
+            if not auto_mode:
+                QtWidgets.QMessageBox.warning(self, "No device", "No device found. Please connect your mouse.")
             return False
         return True
 
 
     def _send_reports(self, reports: list[bytes], label: str) -> None:
-        if not self._require_device():
-            return
-        try:
-            import time
-            for report in reports:
-                self.device.send(report)
-                self._log(f"{label}: {report.hex()}")
-                # Protocol requires delay between commands to prevent drops
-                # Wireless mode is slower/less reliable, increasing to 250ms
-                time.sleep(0.25)
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Send failed", str(exc))
-
-    def _apply_button_binding(self) -> None:
+        """Send reports using a transient device connection."""
         if not self._require_device():
             return
         
-        button_key = self.current_edit_key
-        if button_key is None:
-            QtWidgets.QMessageBox.warning(self, "No Button", "Please select a button to edit first.")
+        device = None
+        try:
+            import time
+            # Open device transiently
+            device = vp.VenusDevice(self.device_path)
+            device.open()
+            
+            for report in reports:
+                if device.send_reliable(report):
+                    self._log(f"{label}: {report.hex()}")
+                else:
+                    self._log(f"TIMEOUT: {report.hex()}")
+                    raise RuntimeError(f"Device timed out on command {report[1]:02X}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Send failed", str(exc))
+        finally:
+            # Always close the device
+            if device:
+                device.close()
+
+
+    def _sync_all_buttons(self) -> None:
+        """Sync ALL cached button assignments to the device (Reset + Upload)."""
+        if not self.device_path: return
+
+        # Progress Dialog
+        progress = QtWidgets.QProgressDialog("Syncing... (Resetting Device)", "Cancel", 0, 100, self)
+        progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        progress.show()
+        
+        try:
+            reports = []
+            # 1. Prepare (Cmd 04) - Matches working Windows sequence
+            reports.append(vp.build_simple(0x04))
+            
+            # 2. Build Packets
+            # Use sorted keys for deterministic packet order
+            keys = sorted(self.button_assignments.keys(), key=lambda k: int(k.split()[1]))
+            
+            for key in keys:
+                assign = self.button_assignments[key]
+                action = assign["action"]
+                params = assign["params"]
+                
+                # Resolve addresses
+                code_hi_base, code_lo, apply_offset_base = self._resolve_profile(key, use_fallback=True)
+                profile_pages = [0x00] # Only Page 0 needed for Binds? 
+                # Wait. Key Defs are on Page 1 (0x00+0x00 = 0x00? No, Code Hi is 0x01/0x02).
+                # Current logic used loop [0x00, 0x40, 0x80, 0xC0] to support profiles.
+                # Let's stick to that to be robust.
+                profile_pages = [0x00, 0x40, 0x80, 0xC0]
+                
+                for page in profile_pages:
+                    current_code_hi = code_hi_base + page
+                    
+                    if action == "Keyboard Key":
+                        hid_key = params.get("key", 0)
+                        modifier = params.get("mod", 0)
+                        # Page 1 Write (Key Def)
+                        reports.extend(vp.build_key_binding(current_code_hi, code_lo, hid_key, modifier))
+                        # Page 0 Bind (Type 05)
+                        reports.append(vp.build_keyboard_bind(apply_offset_base, page=page))
+
+                    elif action == "Disabled":
+                        reports.append(vp.build_disabled(apply_offset_base, page=page))
+                        
+                    elif action in ["Left Click", "Right Click", "Middle Click", "Forward", "Back"]:
+                         val_map = {"Left Click": 0x01, "Right Click": 0x02, "Middle Click": 0x04, "Back": 0x08, "Forward": 0x10}
+                         val = val_map.get(action, 0)
+                         reports.append(vp.build_mouse_param(apply_offset_base, val, page=page))
+                    
+                    elif action == "DPI Control":
+                         func_id = params.get("func", 1) # 1=Loop, 2=+, 3=-
+                         dummy_key = 0x23 if func_id==1 else (0x24 if func_id==2 else 0x25)
+                         reports.extend(vp.build_key_binding(current_code_hi, code_lo, dummy_key, 0))
+                         reports.append(vp.build_apply_binding(apply_offset_base, action_type=2, action_code=0x50, modifier=func_id, page=page))
+
+                    elif action in ["Fire Key", "Triple Click"]:
+                         delay = params.get("delay", 40)
+                         rep = params.get("repeat", 3)
+                         reports.append(vp.build_special_binding(apply_offset_base, delay, rep, page=page))
+                    
+                    elif action == "Media Key":
+                         reports.append(vp.build_apply_binding(apply_offset_base, action_type=5, action_code=0x51, page=page))
+                    
+                    elif action == "Macro":
+                         idx = params.get("index", 1)
+                         mode = params.get("mode", vp.MACRO_REPEAT_ONCE)
+                         reports.append(vp.build_macro_bind(apply_offset_base, idx-1, mode, page=page))
+
+            # 3. Commit
+            reports.append(vp.build_simple(0x04))
+            
+            # SYNC SEQUENCE
+            if self.device_path:
+                mouse = vp.VenusDevice(self.device_path)
+                mouse.open()
+                try:
+                    # 1. Prepare (Cmd 04)
+                    self._log("Readying device for sync...")
+                    if not mouse.send_reliable(vp.build_simple(0x04)):
+                        raise RuntimeError("Sync Timeout: Prepare (0x04)")
+
+                    # 2. Handshake (Cmd 03)
+                    if not mouse.send_reliable(vp.build_simple(0x03)):
+                        self._log("Sync failed: Handshake (0x03) timed out.")
+                        raise RuntimeError("Sync Timeout: Handshake (0x03)")
+                    
+                    # 3. Send All Packets
+                    total_pkts = len(reports)
+                    for i, r in enumerate(reports):
+                        if not mouse.send_reliable(r):
+                            raise RuntimeError(f"Sync Timeout: Packet {i} ({r.hex()})")
+                        
+                        if i % 5 == 0:
+                            pct = int((i / total_pkts) * 100)
+                            progress.setValue(pct)
+                            QtWidgets.QApplication.processEvents()
+                            self._log(f"Sync: {r.hex()}")
+                    
+                    progress.setValue(100)
+                    self._log("Sync Complete.")
+                finally:
+                    mouse.close()
+            
+        except Exception as e:
+            self._log(f"Sync Error: {e}")
+            QtWidgets.QMessageBox.critical(self, "Sync Error", str(e))
+        finally:
+            progress.close()
+
+
+    def _apply_button_binding(self) -> None:
+        if not self.current_edit_key:
             return
 
         action = self.action_select.currentText()
-
-        reports = [vp.build_simple(0x04), vp.build_simple(0x03)]  # Windows sequence: 0x04 THEN 0x03
-
-        if action == "Keyboard Key":
-            # Get key from QKeySequenceEdit
+        params = {}
+        
+        # VALIDATION & PARAMS
+        if action == "Macro":
+            mode = self.macro_repeat_combo.currentData()
+            count = self.macro_repeat_count.value() if mode == 0x02 else mode
+            params = {
+                "index": self.macro_index_spin.value(),
+                "mode": count
+            }
+        elif action == "Keyboard Key":
             seq = self.key_select.keySequence()
             if seq.isEmpty():
-                QtWidgets.QMessageBox.warning(self, "No Key", "Please type a key in the field.")
+                QtWidgets.QMessageBox.warning(self, "Invalid", "Please press a key combination.")
                 return
-
-            seq_str = seq.toString(QtGui.QKeySequence.SequenceFormat.PortableText)
-            # seq_str might be "Ctrl+Shift+A" or "Return"
-            parts = seq_str.split('+')
-            base_key_name = parts[-1]
             
-            # Map Qt names to HID names if needed
-            name_map = {
-                "Return": "Enter",
-                "Esc": "Escape",
-                "Del": "Delete",
-                "Ins": "Insert",
-                "PgUp": "PageUp",
-                "PgDown": "PageDown",
-                "Bksp": "Backspace",
-                # Add more if found missing
-            }
-            hid_name = name_map.get(base_key_name, base_key_name)
-            
-            if hid_name not in vp.HID_KEY_USAGE:
-                QtWidgets.QMessageBox.warning(self, "Unknown Key", f"Key '{base_key_name}' (mapped to '{hid_name}') not found in HID database.")
-                return
-
-            key_code = vp.HID_KEY_USAGE[hid_name]
-            
-            # Compute modifier byte from checkboxes (AND the typed sequence)
-            # If user typed "Ctrl+A", we can infer Ctrl.
-            # But user said "select modifier keys... with check boxes".
-            # So we respect checkboxes primarily. 
-            # Optionally we could auto-check them, but let's stick to reading them.
+            # Use our custom capture logic (first key)
+            key_name = seq.toString().split('+')[-1]
+            hid_key = vp.HID_KEY_USAGE.get(key_name.upper(), 0)
             
             modifier = 0
-            if self.mod_ctrl.isChecked():
-                modifier |= vp.MODIFIER_CTRL
-            if self.mod_shift.isChecked():
-                modifier |= vp.MODIFIER_SHIFT
-            if self.mod_alt.isChecked():
-                modifier |= vp.MODIFIER_ALT
-            if self.mod_win.isChecked():
-                modifier |= vp.MODIFIER_WIN
+            if self.mod_ctrl.isChecked(): modifier |= vp.MODIFIER_CTRL
+            if self.mod_shift.isChecked(): modifier |= vp.MODIFIER_SHIFT
+            if self.mod_alt.isChecked(): modifier |= vp.MODIFIER_ALT
+            if self.mod_win.isChecked(): modifier |= vp.MODIFIER_WIN
             
-            # Resolve Base Profile (Profile 1) Addresses
-            code_hi_base, code_lo, apply_offset_base = self._resolve_profile(button_key, use_fallback=True)
-            
-            # List of profile pages (Page 0x00, 0x40, 0x80, 0xC0)
-            # We write to ALL of them to ensure consistency across Wired/Wireless modes
-            profile_pages = [0x00, 0x40, 0x80, 0xC0]
-            
-            if action == "Reset Defaults":
-                # Reset is global? Or per profile? 
-                # Command 0x09 is simple. Assume global or irrelevant to page.
-                self._send_reports([vp.build_simple(0x09)], "Reset defaults")
-                return
+            params = {"key": hid_key, "mod": modifier}
 
-            for page in profile_pages:
-                # Adjust code_hi for the current page (Key Data page shifts with Profile page)
-                # If Profile 1 keys are at Page 1, Profile 2 keys are at Page 0x41.
-                current_code_hi = code_hi_base + page
+        elif action in ["Left Click", "Right Click", "Middle Click", "Forward", "Back"]:
+            pass 
+             
+        elif action == "DPI Control":
+            params = {"func": self.dpi_action_select.currentData()}
+             
+        elif action in ["Fire Key", "Triple Click"]:
+            params = {"delay": self.special_delay_spin.value(), "repeat": self.special_repeat_spin.value()}
+             
+        elif action == "Disabled":
+            pass
+             
+        elif action == "Media Key":
+            code = self.media_select.currentData()
+            params = {"code": code}
+             
+        elif action == "Polling Rate Toggle":
+            pass
+             
+        elif action == "RGB Toggle":
+            pass
 
-                if action == "Keyboard Key":
-                    reports.extend(vp.build_key_binding(current_code_hi, code_lo, key_code, modifier))
-                    
-                    # Application packet binding the slot to Keyboard function (Type 0x05)
-                    reports.append(vp.build_apply_binding(apply_offset_base, action_type=vp.BUTTON_TYPE_KEYBOARD, action_code=0x50, modifier=modifier, page=page))
-
-                elif action == "DPI Control":
-                    # Map Function ID to (Key, Mod)
-                    func_id = self.dpi_action_select.currentData()
-                    
-                    hid_key = 0x23  # Default 6
-                    if func_id == 0x03: hid_key = 0x24 # 7
-                    elif func_id == 0x01: hid_key = 0x25 # 8
-                    
-                    # Write Page 1 data: Simple Key Binding (No modifiers in stream)
-                    reports.extend(vp.build_key_binding(current_code_hi, code_lo, hid_key, modifier=0))
-                    
-                    # Page 0 Binding: Type 0x02 (DPI Legacy), D1 = func_id
-                    reports.append(vp.build_apply_binding(apply_offset_base, action_type=vp.BUTTON_TYPE_DPI_LEGACY, action_code=0x50, modifier=func_id, page=page))
-
-                elif action in ["Left Click", "Right Click", "Middle Click", "Forward", "Back"]:
-                    val_map = {
-                        "Left Click": 0x01, "Right Click": 0x02, "Middle Click": 0x04,
-                        "Back": 0x08, "Forward": 0x10
-                    }
-                    val = val_map[action]
-                    reports.append(vp.build_mouse_param(apply_offset_base, val, page=page))
-
-                elif action == "Macro":
-                    macro_index = self.macro_index_spin.value()
-                    repeat_mode = self.macro_repeat_combo.currentData()
-                    reports.append(vp.build_macro_bind(apply_offset_base, macro_index, repeat_mode, page=page))
-
-                elif action in ["Fire Key", "Triple Click"]:
-                    delay_ms = self.special_delay_spin.value()
-                    repeat_count = self.special_repeat_spin.value()
-                    reports.append(vp.build_special_binding(apply_offset_base, delay_ms, repeat_count, page=page))
-
-                elif action == "Media Key":
-                    media_key_name = self.media_select.currentText()
-                    media_code = self.media_select.currentData()
-                    
-                    # Media keys use a keyboard region packet structure (Type 0x05/0x02? Actually seen as Type 0x05)
-                    # Payload construction:
-                    payload = bytes([
-                        0x00, current_code_hi, code_lo, 0x08, 0x02, 
-                        0x82, media_code, 0x00, 
-                        0x42, media_code, 0x00, 
-                        0x00, 0x00, 0x00
-                    ])
-                    reports.append(vp.build_report(0x07, payload))
-                    
-                    # Apply packet (Type 0x05 Media)
-                    reports.append(vp.build_apply_binding(apply_offset_base, action_type=vp.BUTTON_TYPE_MEDIA, action_code=0x51, page=page))
-
-                elif action == "RGB Toggle":
-                    reports.append(vp.build_rgb_toggle(apply_offset_base, page=page))
-
-                elif action == "Polling Rate Toggle":
-                    reports.append(vp.build_poll_rate_toggle(apply_offset_base, page=page))
-
-                elif action == "Disabled":
-                    reports.append(vp.build_disabled(apply_offset_base, page=page))
-
-            # Add Commit and Wake Packets (Once at the end of the batch)
-            reports.append(vp.build_simple(0x04))
-            reports.append(vp.build_simple(0x03))
-            
-            desc_str = f"{action}"
-            if action == "Keyboard Key" or action == "DPI Control":
-                # Reconstruct mod string for logging
-                if modifier:
-                    parts = []
-                    if modifier & vp.MODIFIER_CTRL: parts.append("Ctrl")
-                    if modifier & vp.MODIFIER_SHIFT: parts.append("Shift")
-                    if modifier & vp.MODIFIER_ALT: parts.append("Alt")
-                    if modifier & vp.MODIFIER_WIN: parts.append("Win")
-                    mod_str = "+".join(parts) + "+"
-                    desc_str += f" ({mod_str}{hid_name})"
-                else:
-                    desc_str += f" ({hid_name})"
-            elif action == "Macro":
-                 desc_str += f" {self.macro_index_spin.value()}"
-
-            self._send_reports(reports, f"Bind {button_key} -> {desc_str} (All 4 Profiles)")
-            return
-
+        # UPDATE STATE
+        self.button_assignments[self.current_edit_key] = {"action": action, "params": params}
+        
+        # UI FEEDBACK (Pending)
+        for row in range(self.btn_table.rowCount()):
+             key = self.btn_table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
+             if key == self.current_edit_key:
+                 self.btn_table.item(row, 1).setText(f"{action} (Syncing...)")
+                 break
+        
+        QtWidgets.QApplication.processEvents()
+        
+        # SYNC
+        self._sync_all_buttons()
+        
+        # UI FEEDBACK (Done)
+        for row in range(self.btn_table.rowCount()):
+             key = self.btn_table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
+             if key == self.current_edit_key:
+                 self.btn_table.item(row, 1).setText(action)
+                 break
 
 
     def _upload_macro(self) -> None:
-        if not self._require_device():
+        """Collect current macro and upload to device."""
+        if not self.device_path:
             return
-        name = self.macro_name_edit.text().strip() or "macro"
         
-        # Get events from the visual table
-        macro_events = self._get_macro_events_from_table()
-        
-        if not macro_events:
-            QtWidgets.QMessageBox.warning(self, "No Events", "Add some macro events before uploading.")
+        macro_index = self.macro_bind_index_spin.value() - 1  # 0-indexed internally
+        if macro_index < 0 or macro_index > 11:
+            QtWidgets.QMessageBox.warning(self, "Invalid", "Macro Index must be 1-12.")
             return
-
-        # Get the target button to check availability (not used for page calc anymore)
-        button_key = self.macro_button_select.currentData()
         try:
-            _, _, apply_offset = self._resolve_profile(button_key, use_fallback=False)
-        except ValueError as exc:
-            QtWidgets.QMessageBox.warning(self, "Missing profile", str(exc))
-            return
-        
-        # Determine Macro Index and Repeat Mode
-        macro_index = self.macro_bind_index_spin.value()
-        repeat_mode = self.macro_tab_repeat_combo.currentData()
-
-        # Calculate macro memory location using new slot logic
-        start_page, start_offset = vp.get_macro_slot_info(macro_index)
-        self._log(f"Using macro slot {macro_index}: Page 0x{start_page:02X}, Offset 0x{start_offset:02X}")
-
-        # Prepare name (UTF-16LE)
-        name_bytes = name.encode("utf-16le")
-        # Name is stored at offset 0 (1 byte header + bytes). Max safe len ~20 bytes?
-        # Protocol uses 1 byte for name length.
-        
-        # Build macro buffer
-        try:
-            # First, check total size
-            # Name takes len(name_bytes) + 1
-            # Events take 5 bytes * 2 * num_events (approx 10 bytes per key cycle)
-            total_size = 1 + len(name_bytes) + (len(macro_events) * 10) + 6 # +6 for terminator
-            
-            if total_size > 384:
-                msg = f"Macro is too large ({total_size} bytes). Max is 384 bytes.\nPlease reduce event count."
-                QtWidgets.QMessageBox.warning(self, "Macro limitations", msg)
+            # 1. Collect events from table
+            raw_events = self._get_macro_events_from_table()
+            if not raw_events:
+                QtWidgets.QMessageBox.warning(self, "Error", "No valid events to upload.")
                 return
 
-            buf = bytearray(0x200) # Use reasonably large buffer, but we only send what's needed
-            # Byte 0 = Slot Index (NOT name length! This was a bug causing all macros to show Slot=6)
-            buf[0] = macro_index
-            # Name is UTF-16LE starting at byte 1, padded with zeros to byte 0x1E (30 bytes max)
-            name_bytes_capped = name_bytes[:28]  # Max 28 bytes = 14 chars
-            buf[1 : 1 + len(name_bytes_capped)] = name_bytes_capped
+            has_modifier = any(ev.is_modifier for ev in raw_events)
+            has_release = any(not ev.is_down for ev in raw_events)
+            if has_modifier:
+                events = list(raw_events)
+            else:
+                # Normalize to clean down/up pairs using key-down events only.
+                if has_release:
+                    self._log("Normalizing macro to clean down/up pairs.")
+                events = []
+                for ev in raw_events:
+                    if not ev.is_down:
+                        continue
+                    events.append(vp.MacroEvent(ev.keycode, True, ev.delay_ms, False))
+                    events.append(vp.MacroEvent(ev.keycode, False, ev.delay_ms, False))
 
-            # Pack events into buffer starting at 0x1E
-            event_offset = 0x20  # Events start after header (byte 0x1F is event count)
-            for event in macro_events:
-                event_data = event.to_bytes()
-                buf[event_offset : event_offset + len(event_data)] = event_data
-                event_offset += len(event_data)
+            if not events:
+                QtWidgets.QMessageBox.warning(self, "Error", "No valid events to upload.")
+                return
 
-            # Terminator goes after last event - align to 10-byte boundary
-            terminator_offset = ((event_offset + 9) // 10) * 10  # Round up to next 10
-            if terminator_offset < event_offset:
-                terminator_offset = event_offset + 10 # Should have been covered by round up, but safety
+            # Ensure last event delay = 3ms end marker.
+            last = events[-1]
+            events[-1] = vp.MacroEvent(last.keycode, last.is_down, 3, last.is_modifier)
+            
+            # 2. Build macro data buffer
+            macro_name = self.macro_name_edit.text()[:15] or "Macro"
+            name_utf16 = macro_name.encode('utf-16-le')
+            name_len = len(name_utf16)
+            name_padded = name_utf16.ljust(30, b'\x00')[:30]
 
-            self._log(f"Events end at buffer 0x{event_offset:02X}, terminator at 0x{terminator_offset:02X}")
+            # Header structure (32 bytes total):
+            # [0x00]: Name length in bytes
+            # [0x01-0x1E]: Name in UTF-16LE (30 bytes, padded)
+            # [0x1F]: Event count (actual number of events)
+            event_count = len(events)
+            header = bytes([name_len]) + name_padded + bytes([event_count])
+
+            # Event data starts at offset 0x20 (32)
+            event_data = b''.join(ev.to_bytes() for ev in events)
+
+            # Full macro buffer (header + events)
+            full_macro = header + event_data
+
+            # 3. Calculate terminator checksum
+            chk = vp.calculate_terminator_checksum(
+                full_macro,
+                event_count=event_count,
+            )
             
-            # The terminator chunk itself is built by build_macro_terminator, which includes 
-            # [00 03 OFFSET 00...]. The offset inside the terminator is the offset WITHIN the macro slot?
-            # Or the absolute offset? Existing code passed 'terminator_offset' (buffer offset).
-            # Let's trust it's relative to macro start. But we need to verify terminator logic later if it fails.
+            # Terminator is 4 bytes: [checksum] [00] [00] [00]
+            terminator = bytes([chk, 0x00, 0x00, 0x00])
+            full_macro += terminator
+
+            # Pad to 10-byte boundary (AFTER adding terminator)
+            pad_len = (10 - (len(full_macro) % 10)) % 10
+            full_macro += bytes(pad_len)
             
-            # Terminator bytes for the buffer (we'll manually construct chunks rather than using helper for terminator)
-            # Or just stop iterating at terminator_offset and send terminator separately?
-            # Let's iterate up to terminator_offset.
+            # Get slot address
+            page, offset = vp.get_macro_slot_info(macro_index)
             
+            self._log(f"Uploading Macro {macro_index+1} ({macro_name}) to Page 0x{page:02X} Offset 0x{offset:02X}...")
+            
+            # Build reports
+            reports = [
+                vp.build_simple(0x04),  # Prepare
+                vp.build_simple(0x03)   # Handshake
+            ]
+            
+            # Split into 10-byte chunks
+            addr = (page << 8) | offset
+            for i in range(0, len(full_macro), 10):
+                chunk = full_macro[i:i+10]
+                chunk_addr = addr + i
+                chunk_page = (chunk_addr >> 8) & 0xFF
+                chunk_off = chunk_addr & 0xFF
+                reports.append(vp.build_macro_chunk(chunk_off, chunk, chunk_page))
+            
+            # Commit
+            reports.append(vp.build_simple(0x04))
+            
+            self._send_reports(reports, f"Macro {macro_index+1} Upload ({len(full_macro)} bytes)")
+            QtWidgets.QMessageBox.information(self, "Success", f"Macro {macro_index+1} uploaded successfully!")
+
         except Exception as e:
-            self._log(f"Error building buffer: {e}")
-            return
-
-        # Upload sequence
-        # Upload sequence
-        reports = [
-            # Windows sequence: 0x04 (Prepare) -> 0x03 (Handshake)
-            vp.build_simple(0x04),
-            vp.build_simple(0x03),
-        ]
-        
-        # Upload chunks of 10 bytes up to terminator_offset
-        # Map buffer offsets to absolute (Page, Offset)
-        for buf_offset in range(0x00, terminator_offset, 0x0A):
-            chunk = bytes(buf[buf_offset : buf_offset + 10])
-            
-            # Calculate absolute address
-            abs_addr_int = (start_page << 8) | start_offset
-            curr_addr_int = abs_addr_int + buf_offset
-            
-            curr_page = (curr_addr_int >> 8) & 0xFF
-            curr_offset = curr_addr_int & 0xFF
-            
-            packet = vp.build_macro_chunk(curr_offset, chunk, curr_page)
-            reports.append(packet)
-            
-        # Terminator
-        # Calculate address for terminator
-        abs_term_int = (start_page << 8) | start_offset + terminator_offset
-        term_page = (abs_term_int >> 8) & 0xFF
-        term_offset = abs_term_int & 0xFF
-        
-        # build_macro_terminator helper uses build_macro_chunk internally.
-        # It puts [00 03 OFFSET 00...]. 
-        # CAUTION: The 'OFFSET' in the terminator data payload might need to be specific.
-        # Captures showed "00 03 64 00..." for terminator at offset 0x64.
-        # So it likely wants the *buffer offset* (relative to macro start), not absolute 0x80+offset.
-        # We'll pass terminator_offset as the 'offset' argument to the helper (for payload), 
-        # but we need to ensure the helper uses term_page/term_offset for the REPORT structure.
-        
-        # Current vp.build_macro_terminator(offset, page) calls build_macro_chunk(offset, tail, page).
-        # It uses 'offset' for both payload and chunk address. This is wrong if start_offset != 0.
-        # We need to manually build the terminator chunk here to be precise.
-        
-        term_payload_inner = bytes([0x00, 0x03, terminator_offset & 0xFF, 0x00, 0x00, 0x00])
-        reports.append(vp.build_macro_chunk(term_offset, term_payload_inner, term_page))
-        
-        # Bind macro to button
-        reports.append(vp.build_macro_bind(apply_offset, macro_index, repeat_mode))
-        
-        # Commit changes - No trailing 0x04 found in captures
-        # reports.append(vp.build_simple(0x04))
-        
-        self._send_reports(reports, f"Upload macro '{name}' (Slot {macro_index}) to {button_key}")
-        self._log(f"Macro uploaded (Size: {total_size}B).")
-
+            self._log(f"Macro Upload Error: {e}")
+            QtWidgets.QMessageBox.critical(self, "Upload Error", str(e))
 
     def _bind_macro_to_button(self) -> None:
-        """Rebind an already-uploaded macro to a different button."""
+        """Rebind an already-uploaded macro to a different button using Sync logic."""
         if not self._require_device():
             return
+            
         button_key = self.macro_button_select.currentData()
         macro_index = self.macro_bind_index_spin.value()
         repeat_mode = self.macro_tab_repeat_combo.currentData()
+        repeat_count = self.macro_tab_repeat_count_spin.value()
         
-        try:
-            _, _, apply_offset = self._resolve_profile(button_key, use_fallback=False)
-        except ValueError as exc:
-            QtWidgets.QMessageBox.warning(self, "Missing profile", str(exc))
-            return
-        reports = [vp.build_simple(0x04), vp.build_simple(0x03), vp.build_macro_bind(apply_offset, macro_index, repeat_mode)]
-        self._send_reports(reports, f"Bind macro {macro_index} -> {button_key}")
+        # update central state
+        self.button_assignments[button_key] = {
+            "action": "Macro", 
+            "params": {"index": macro_index, "mode": repeat_mode, "count": repeat_count}
+        }
+        
+        # Give feedback
+        QtWidgets.QMessageBox.information(self, "Binding", f"Queueing Bind: {button_key} -> Macro {macro_index}.\nSyncing now...")
+        
+        # Sync
+        self._sync_all_buttons()
 
 
     def _apply_rgb_preset(self) -> None:
         preset_key = self.rgb_select.currentText()
         payload = vp.RGB_PRESETS[preset_key]
-        reports = [vp.build_simple(0x04), vp.build_simple(0x03), vp.build_report(0x07, payload)]
+        reports = [vp.build_simple(0x03), vp.build_report(0x07, payload), vp.build_simple(0x04)]
         self._send_reports(reports, f"RGB Preset: {preset_key}")
 
     def _apply_rgb_custom(self) -> None:
@@ -1422,8 +1598,8 @@ class MainWindow(QtWidgets.QMainWindow):
         brightness = self.rgb_brightness.value()
         
         rgb_packet = vp.build_rgb(r, g, b, mode, brightness)
-        # Sequence based on captures: 03, 03, [RGB], 04
-        reports = [vp.build_simple(0x04), vp.build_simple(0x03), rgb_packet]
+        # Sequence based on confirmed captures: 03 (Handshake), [RGB Data], 04 (Commit)
+        reports = [vp.build_simple(0x03), rgb_packet, vp.build_simple(0x04)]
         
         mode_name = self.rgb_mode.currentText()
         self._send_reports(reports, f"RGB Custom: #{r:02x}{g:02x}{b:02x} {mode_name} {brightness}%")
@@ -1503,28 +1679,32 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         
         self._log("--- Reading from Device ---")
+        device = None
         try:
-            # Ensure clean state and enter config mode
-            self.device.send(vp.build_simple(0x04))
-            self.device.send(vp.build_simple(0x03))
+            # Open device transiently for reading
+            device = vp.VenusDevice(self.device_path)
+            device.open()
+            
+            # Enter read mode with handshake only (Windows sends 0x03 to start reads)
+            device.send(vp.build_simple(0x03))
             
             # Page 0 contains most settings
             page0 = bytearray()
             # Read in larger chunks if reliable, but sticking to 8 bytes for now
             for offset in range(0, 256, 8):
-                chunk = self.device.read_flash(0, offset, 8)
+                chunk = device.read_flash(0, offset, 8)
                 page0.extend(chunk)
             
             # Page 1 contains keyboard mappings (Part 1)
             page1 = bytearray()
             for offset in range(0, 256, 8):
-                chunk = self.device.read_flash(1, offset, 8)
+                chunk = device.read_flash(1, offset, 8)
                 page1.extend(chunk)
 
             # Page 2 contains keyboard mappings (Part 2)
             page2 = bytearray()
             for offset in range(0, 256, 8):
-                chunk = self.device.read_flash(2, offset, 8)
+                chunk = device.read_flash(2, offset, 8)
                 page2.extend(chunk)
 
 
@@ -1709,10 +1889,17 @@ class MainWindow(QtWidgets.QMainWindow):
                     params["index"] = macro_index + 1
                     self._log(f"  DEBUG: Macro Index {macro_index+1}")
                     
+                    # D2 is repeat mode/count
+                    params["mode"] = d2
+                    if d2 >= 0x01 and d2 <= 0xFD: # Repeat Count
+                        params["count"] = d2
+                    else:
+                        params["count"] = 1 # Default for other modes
+                    
                     # Fetch macro name from its flash page
-                    macro_page = vp.get_macro_page(profile.apply_offset)
+                    m_page, m_offset = vp.get_macro_slot_info(d1)
                     try:
-                        name_chunk = self.device.read_flash(macro_page, 0x00, 11)
+                        name_chunk = device.read_flash(m_page, m_offset, 8)
                         if name_chunk and name_chunk[0] > 0 and name_chunk[0] <= 22:
                             nlen = name_chunk[0]
                             params["name"] = name_chunk[1:1+nlen].decode('utf-16le', errors='ignore')
@@ -1735,9 +1922,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log("Button bindings parsed.")
             self._update_all_ui_from_assignments()
             
-            # Close session to return mouse to normal input mode
-            # Sending Commit (04) signals end of config. 
-            self.device.send(vp.build_simple(0x04))
+            # No trailing commit needed after reads - device auto-exits read mode
+            # Sending 0x04/0x03 here would RE-ENTER config mode and break button inputs!
             
             self._log("--- Done Reading ---")
             QtWidgets.QMessageBox.information(self, "Read Success", "Configuration successfully read from device.")
@@ -1745,6 +1931,10 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             self._log(f"Error reading configuration: {e}")
             QtWidgets.QMessageBox.critical(self, "Read Error", str(e))
+        finally:
+            # Always close the device
+            if device:
+                device.close()
 
     def _export_profile(self) -> None:
         """Dump device memory to a file."""
@@ -1759,17 +1949,22 @@ class MainWindow(QtWidgets.QMainWindow):
         progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         progress.show()
         
+        device = None
         try:
+            # Open device transiently
+            device = vp.VenusDevice(self.device_path)
+            device.open()
+            
             with open(fname, "wb") as f:
                 for page in range(256):
                     if progress.wasCanceled():
-                        return
+                        break
                     progress.setValue(page)
                     
                     # Read page (256 bytes)
                     page_data = bytearray()
                     for offset in range(0, 256, 8):
-                        chunk = self.device.read_flash(page, offset, 8)
+                        chunk = device.read_flash(page, offset, 8)
                         page_data.extend(chunk)
                     f.write(page_data)
             self._log(f"Profile exported to {fname}")
@@ -1778,6 +1973,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log(f"Export failed: {e}")
             QtWidgets.QMessageBox.critical(self, "Export Failed", str(e))
         finally:
+            if device:
+                device.close()
             progress.close()
 
     def _import_profile(self) -> None:
@@ -1811,16 +2008,15 @@ class MainWindow(QtWidgets.QMainWindow):
         progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         progress.show()
         
+        device = None
         try:
-            # Prepare flash?
-            # Upload macro sequence uses 0x03, 0x03...
-            # We should probably send Prepare before each page or once at start?
-            # Let's do it once globally, or per page if safer.
-            # Captures for macros use it once per macro op.
+            # Open device transiently
+            device = vp.VenusDevice(self.device_path)
+            device.open()
             
             # Send initial prepare
-            self.device.send(vp.build_simple(0x03))
-            self.device.send(vp.build_simple(0x03))
+            device.send(vp.build_simple(0x03))
+            device.send(vp.build_simple(0x03))
             
             import time
             
@@ -1833,35 +2029,30 @@ class MainWindow(QtWidgets.QMainWindow):
                 page_start = page * 256
                 page_data = data[page_start : page_start + 256]
                 
-                # Check if empty (FF) - optimization
-                # If page is all 0xFF, we might skip if flash is pre-erased, but we don't know state.
-                # Safer to write all, or check if different? READING is slow.
-                # Writing 0xFF might be fast or slow.
-                # Let's write everything for correctness.
-                
                 # Write in 10-byte chunks (protocol limit)
                 for offset in range(0, 256, 10):
                     chunk = page_data[offset : offset + 10]
-                    # build_flash_write(page, offset, chunk) -> build_macro_chunk -> returns packet
                     packet = vp.build_flash_write(page, offset, chunk)
-                    self.device.send(packet)
-                    time.sleep(0.002) # Small delay to prevent flooding
+                    device.send(packet)
+                    time.sleep(0.002)
                     
             # Finalize
-            self.device.send(vp.build_simple(0x04))
-            self.device.send(vp.build_simple(0x04))
+            device.send(vp.build_simple(0x04))
+            device.send(vp.build_simple(0x04))
             
             self._log(f"Profile imported from {fname}")
             QtWidgets.QMessageBox.information(self, "Import Successful", "Profile successfully written to device.")
-            
-            # Reload settings
-            self._read_settings()
             
         except Exception as e:
             self._log(f"Import failed: {e}")
             QtWidgets.QMessageBox.critical(self, "Import Failed", str(e))
         finally:
+            if device:
+                device.close()
             progress.close()
+        
+        # Reload settings (after device is closed)
+        self._read_settings()
 
     def _initialize_default_assignments(self) -> None:
 
@@ -1896,9 +2087,9 @@ class MainWindow(QtWidgets.QMainWindow):
                     
                 elif action == "DPI Control":
                     func = assign["params"].get("dpi_func", 0)
-                    if func == 0x02: desc = "DPI Loop (Shift+6)"
-                    elif func == 0x03: desc = "DPI + (Ctrl+Shift+7)"
-                    elif func == 0x01: desc = "DPI - (Ctrl+8)"
+                    if func == 0x01: desc = "DPI Loop"
+                    elif func == 0x02: desc = "DPI +"
+                    elif func == 0x03: desc = "DPI -"
                     else: desc = f"DPI Control (0x{func:02X})"
                 elif action == "Media Key":
                     media_code = assign["params"].get("key", 0)
@@ -1910,7 +2101,18 @@ class MainWindow(QtWidgets.QMainWindow):
                             break
                     desc = f"Media: {media_name or f'0x{media_code:02X}'}"
                 elif action == "Macro":
-                    desc = f"Macro: {assign['params'].get('name', '')}"
+                    macro_name = assign['params'].get('name', '')
+                    macro_idx = assign['params'].get('index', 0)
+                    macro_mode = assign['params'].get('mode', vp.MACRO_REPEAT_ONCE)
+                    macro_count = assign['params'].get('count', 1)
+
+                    mode_str = ""
+                    if macro_mode == vp.MACRO_REPEAT_ONCE: mode_str = "Once"
+                    elif macro_mode == vp.MACRO_REPEAT_HOLD: mode_str = "Hold"
+                    elif macro_mode == vp.MACRO_REPEAT_TOGGLE: mode_str = "Toggle"
+                    elif macro_mode == vp.MACRO_REPEAT_COUNT: mode_str = f"{macro_count}x"
+                    
+                    desc = f"Macro {macro_idx}: {macro_name} ({mode_str})"
                 
                 self.btn_table.item(row, 1).setText(desc)
 
@@ -1929,55 +2131,35 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._require_device():
             return
             
-        slot_index = self.macro_index_spin.value()
-        start_page, start_offset = vp.get_macro_slot_info(slot_index)
+            slot_index = self.macro_index_spin.value()
+            start_page, start_offset = vp.get_macro_slot_info(slot_index - 1)
         
         self._log(f"Reading macro slot {slot_index} (Page 0x{start_page:02X}, Offset 0x{start_offset:02X})")
         
-        self._log(f"Reading macro slot {slot_index} (Page 0x{start_page:02X}, Offset 0x{start_offset:02X})")
-        
-        # Retry logic for read error (device might have reset or timed out)
         data = bytearray()
+        device = None
         try:
-            # Check if we can read one byte first to verify connection?
-            # Or just wrap the whole read loop
+            # Open device transiently
+            device = vp.VenusDevice(self.device_path)
+            device.open()
             
-            def attempt_read():
-                data.clear()
-                # Page 1
-                for off in range(0, 256, 8):
-                    data.extend(self.device.read_flash(start_page, off, 8))
-                # Page 2
-                for off in range(0, 256, 8):
-                    data.extend(self.device.read_flash(start_page + 1, off, 8))
+            # Read two pages of macro data
+            for off in range(0, 256, 8):
+                data.extend(device.read_flash(start_page, off, 8))
+            for off in range(0, 256, 8):
+                data.extend(device.read_flash(start_page + 1, off, 8))
             
-            try:
-                attempt_read()
-            except (OSError, RuntimeError) as e:
-                self._log(f"Read failed ({e}), attempting reconnect...")
-                self._disconnect_device()
-                import time
-                time.sleep(0.5)
-                self._refresh_and_connect()
-                if self.device:
-                     self._log("Reconnected. Retrying read...")
-                     attempt_read()
-                else:
-                    raise e # Re-raise if reconnect failed
-
             # Slice relevant part
             if start_offset == 0:
                 raw_macro = data[0:384]
             else:
-                raw_macro = data[128 : 128 + 384] # Offset 0x80 = 128
+                raw_macro = data[128 : 128 + 384]
                 
             # Parse Name
-            # Byte 0 is slot index (NOT name length - this was a bug!)
-            # Name is at bytes 1-28 in UTF-16LE, null terminated
             slot_in_data = raw_macro[0]
             self._log(f"  Slot index in data: {slot_in_data}")
             
-            # Find name by looking for null terminator in UTF-16LE (00 00)
+            # Find name by looking for null terminator in UTF-16LE
             name_bytes = bytearray()
             for i in range(1, 29, 2):
                 if i+1 < len(raw_macro):
@@ -1998,27 +2180,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 
             # Parse Events
             self.macro_event_table.setRowCount(0)
-            event_offset = 0x20  # Events start after header (byte 0x1F is event count)
+            event_offset = 0x20
             
-            # Events are 5 bytes: [Status] [Key] 00 [DelayHi] [DelayLo]
             while event_offset < 380:
-                # Check for terminator (might be in the stream)
-                # If we encounter 0xFF 0xFF or something, or just name boundary?
-                # The buffer is 384 bytes.
-                # Terminator is implicitly where we stop?
-                # Existing write logic writes a terminator chunk [00 03...].
-                # But reading raw data, we look for something not event-like?
-                
-                # Check if enough bytes left for an event
                 if event_offset + 5 > 384:
                     break
                     
                 b0 = raw_macro[event_offset]
                 b1 = raw_macro[event_offset+1]
                 
-                # Heuristic: Valid status is 0x81 (Down) or 0x41 (Up)
                 if b0 not in (0x81, 0x41):
-                    # Likely terminator or empty space (0xFF or 0x00)
                     break
                     
                 keycode = b1
@@ -2036,9 +2207,13 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             self._log(f"Failed to load macro: {e}")
             QtWidgets.QMessageBox.critical(self, "Load Error", str(e))
+        finally:
+            if device:
+                device.close()
+
 
     def _generate_text_macro(self) -> None:
-        """Generate macro events from quick text."""
+        """Generate macro events from quick text with proper modifier handling."""
         text = self.quick_text_edit.text()
         if not text:
             return
@@ -2047,7 +2222,9 @@ class MainWindow(QtWidgets.QMainWindow):
         
         self.macro_event_table.setRowCount(0)
         
-        estimated_bytes = 1 + len(text.encode('utf-16le')) + (len(text) * 10) + 6
+        # Estimate size: modifiers add extra events
+        shift_count = sum(1 for c in text if c in vp.ASCII_TO_HID and vp.ASCII_TO_HID[c][1] != 0)
+        estimated_bytes = 1 + len(text.encode('utf-16le')) + ((len(text) + shift_count * 2) * 5) + 6
         if estimated_bytes > 384:
              QtWidgets.QMessageBox.warning(self, "Too Long", f"Estimated size {estimated_bytes} > 384 bytes.")
              return
@@ -2057,13 +2234,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 code, mod = vp.ASCII_TO_HID[char]
                 key_name = self.HID_USAGE_TO_NAME.get(code, f"Key 0x{code:02X}")
                 
-                # TODO: Handle modifiers if we want to be fancy.
-                # For now, just press the key.
-                
-                # Press
-                self._add_event_to_table(key_name, True, delay)
-                # Release
-                self._add_event_to_table(key_name, False, delay) # Optional small delay on release? Use same for now.
+                if mod != 0:
+                    # Need modifier (Shift for capitals/symbols)
+                    # Pattern: ModDown -> KeyDown -> ModUp -> KeyUp (overlapping)
+                    mod_name = "Shift" if mod == vp.MODIFIER_SHIFT else f"Mod 0x{mod:02X}"
+                    self._add_event_to_table(mod_name, True, delay, is_modifier=True)  # Shift down
+                    self._add_event_to_table(key_name, True, delay)   # Key down
+                    self._add_event_to_table(mod_name, False, delay, is_modifier=True) # Shift up
+                    self._add_event_to_table(key_name, False, delay)  # Key up
+                else:
+                    # Simple key press/release
+                    self._add_event_to_table(key_name, True, delay)
+                    self._add_event_to_table(key_name, False, delay)
             else:
                 self._log(f"Skipping unknown char: {char}")
 

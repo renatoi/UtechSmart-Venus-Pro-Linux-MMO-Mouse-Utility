@@ -10,12 +10,20 @@ This project provides a reverse-engineered implementation of the mouse's HID pro
 
 ## Features
 
-- **Button Remapping:** Fully configure all 16 buttons, including the 12-button side panel.
-- **Modifier Support:** Bind buttons to complex combinations (e.g., `Ctrl+Shift+1`, `Alt+F1`).
-- **Macro Engine:** Create and upload complex macros using a human-readable text format with precise timing controls.
-- **RGB Lighting:** Full custom color picker with support for Steady, Breathing, and Neon modes, plus brightness control.
-- **DPI & Polling Adjustments:** Manage DPI presets and USB polling rates.
+- **Button Remapping:** Configure all 16 buttons, including the 12-button side panel.
+- **Modifier Support:** Bind buttons to combinations (e.g., `Ctrl+Shift+1`, `Alt+F1`).
+- **Macro Engine:** Visual macro editor to record and edit events with precise timing.
+- **RGB Lighting:** WIP (read/write is not fully verified).
+- **DPI & Polling Adjustments:** WIP (read/write is not fully verified).
 - **Factory Reset:** One-click recovery to restore the device to its original factory state.
+
+## Screenshots
+
+Buttons tab:
+![Buttons tab](Buttons.png)
+
+Macros tab:
+![Macros tab](Macros.png)
 
 ## Requirements
 
@@ -54,9 +62,24 @@ Start the configuration utility:
 python3 venus_gui.py
 ```
 
+### How to use
+
+1. Click **Read Settings** to load the current device state.
+2. Use the **Buttons** tab to pick a button, set an action, then click **Apply Binding**.
+3. Use the **Macros** tab to record or build a macro, then click **Upload Macro**.
+4. Bind the macro to a button with **Bind to Button**.
+
 ### Tips
 - **Wired Mode:** It is highly recommended to perform configuration while the mouse is in **wired mode** to ensure settings are correctly written to the flash memory.
-- **Macro Format:** Macros use a simple `key-dn delay, key-up delay` format. Example: `t-dn 93, t-up 157`.
+- **Factory Reset:** If the mouse behaves oddly, the "Advanced" tab contains a Factory Reset button that restores all settings to default (Note: This wipes all custom macros!).
+- **WIP Areas:** DPI, Polling Rate, and RGB controls are still under active reverse-engineering.
+
+## Development
+
+For those interested in the reverse-engineering process or contributing:
+- `NEW_PROTOCOL.md`: Detailed documentation of the USB HID protocol.
+- `win.md`: Notes on the Windows utility behavior.
+- `venus_protocol.py`: Core protocol implementation.
 
 ## Acknowledgments
 This utility was built through careful analysis of USB protocol captures to replicate the behavior of the official Windows driver.

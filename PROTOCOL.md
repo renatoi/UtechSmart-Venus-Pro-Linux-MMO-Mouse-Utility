@@ -143,9 +143,38 @@ Payload bytes (index 2-15):
 
 ### Macro buffer layout (observed)
 - Offset `0x00`: one byte = UTF-16LE name length in bytes.
-- Offset `0x01..`: UTF-16LE name bytes.
-- Offset `0x1E..`: macro event data (format unknown).
-- Offset `0x64`: tail bytes (observed `00 03 69 00 00 00`).
+- Offset `0x01..0x1E`: UTF-16LE name bytes (30 bytes, padded with `00`).
+- Offset `0x1F`: event count (number of 5-byte events).
+- Offset `0x20..`: macro event data.
+
+Event format (5 bytes):
+```
+[status] [keycode] 00 [delay_hi] [delay_lo]
+```
+- `status`: `0x81` = key down, `0x41` = key up, `0x80/0x40` for modifiers.
+- The last event must use delay `0x0003` (3 ms) as the end marker.
+
+Terminator (4 bytes) immediately after the last event:
+```
+[checksum] 00 00 00
+```
+
+Checksum formula (verified against Windows writes):
+```
+checksum = (~sum(events) - event_count + 0x56) & 0xFF
+```
+Where `events` is exactly `event_count * 5` bytes (no header bytes included).
+
+Example (macro name "my_macro", text "testing", 10ms delays):
+```
+10 6d 00 79 00 5f 00 6d 00 61 00 63 00 72 00 6f
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0e
+81 17 00 00 0a 41 17 00 00 0a 81 08 00 00 0a 41
+08 00 00 0a 81 16 00 00 0a 41 16 00 00 0a 81 17
+00 00 0a 41 17 00 00 0a 81 0c 00 00 0a 41 0c 00
+00 0a 81 11 00 00 0a 41 11 00 00 0a 81 0a 00 00
+0a 41 0a 00 00 03 8e 00 00 00
+```
 
 ### Macro bind packet
 Assigns macro index `0x01` to a button (observed for side button 1).
