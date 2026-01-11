@@ -199,6 +199,55 @@ DPI_PRESETS = {
     14100: {"value": 0xA8, "tweak": 0x05},
 }
 
+DPI_VALUE_POINTS = sorted((dpi, info["value"]) for dpi, info in DPI_PRESETS.items())
+DPI_VALUE_POINTS_BY_VALUE = sorted((info["value"], dpi) for dpi, info in DPI_PRESETS.items())
+
+
+def dpi_value_to_tweak(value: int) -> int:
+    return (0x55 - ((value * 2) & 0xFF)) & 0xFF
+
+
+def dpi_to_value(dpi: int) -> int:
+    """Convert DPI to the raw byte value using linear interpolation."""
+    points = DPI_VALUE_POINTS
+    if not points:
+        return 0
+    if dpi <= points[0][0]:
+        (x1, y1), (x2, y2) = points[0], points[1]
+    elif dpi >= points[-1][0]:
+        (x1, y1), (x2, y2) = points[-2], points[-1]
+    else:
+        for i in range(len(points) - 1):
+            x1, y1 = points[i]
+            x2, y2 = points[i + 1]
+            if x1 <= dpi <= x2:
+                break
+    if x2 == x1:
+        return int(max(0, min(255, round(y1))))
+    value = y1 + (dpi - x1) * (y2 - y1) / (x2 - x1)
+    return int(max(0, min(255, round(value))))
+
+
+def value_to_dpi(value: int) -> int:
+    """Convert raw DPI byte value to an approximate DPI."""
+    points = DPI_VALUE_POINTS_BY_VALUE
+    if not points:
+        return 0
+    if value <= points[0][0]:
+        (x1, y1), (x2, y2) = points[0], points[1]
+    elif value >= points[-1][0]:
+        (x1, y1), (x2, y2) = points[-2], points[-1]
+    else:
+        for i in range(len(points) - 1):
+            x1, y1 = points[i]
+            x2, y2 = points[i + 1]
+            if x1 <= value <= x2:
+                break
+    if x2 == x1:
+        return int(round(y1))
+    dpi = y1 + (value - x1) * (y2 - y1) / (x2 - x1)
+    return int(round(dpi))
+
 
 # Macro Repeat Modes
 # Verified from capture: bind macros 123...

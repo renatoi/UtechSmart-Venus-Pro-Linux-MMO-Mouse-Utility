@@ -312,6 +312,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.key_select = QtWidgets.QKeySequenceEdit()
         # Initial empty sequence
         self.key_select.setKeySequence(QtGui.QKeySequence(""))
+        self.special_key_combo = QtWidgets.QComboBox()
+        self.special_key_combo.addItem("Select special key...", None)
+        self.special_key_names = [
+            "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24",
+            "PrintScreen", "ScrollLock", "Pause", "Insert", "Home", "PageUp", "Delete", "End", "PageDown",
+            "NumLock", "Menu",
+            "Keypad /", "Keypad *", "Keypad -", "Keypad +", "Keypad Enter", "Keypad .",
+            "Keypad 0", "Keypad 1", "Keypad 2", "Keypad 3", "Keypad 4",
+            "Keypad 5", "Keypad 6", "Keypad 7", "Keypad 8", "Keypad 9",
+        ]
+        for key_name in self.special_key_names:
+            if key_name in vp.HID_KEY_USAGE:
+                self.special_key_combo.addItem(key_name, key_name)
+        self.special_key_combo.currentIndexChanged.connect(self._on_special_key_select)
+        self.key_select.keySequenceChanged.connect(self._clear_special_key_selection)
         self.mod_ctrl = QtWidgets.QCheckBox("Ctrl")
         self.mod_shift = QtWidgets.QCheckBox("Shift")
         self.mod_alt = QtWidgets.QCheckBox("Alt")
@@ -322,6 +337,8 @@ class MainWindow(QtWidgets.QMainWindow):
         mod_layout.addStretch()
         key_group_layout.addWidget(QtWidgets.QLabel("Key:"))
         key_group_layout.addWidget(self.key_select)
+        key_group_layout.addWidget(QtWidgets.QLabel("Special Keys:"))
+        key_group_layout.addWidget(self.special_key_combo)
         key_group_layout.addWidget(QtWidgets.QLabel("Modifiers:"))
         key_group_layout.addLayout(mod_layout)
         
@@ -522,17 +539,28 @@ class MainWindow(QtWidgets.QMainWindow):
             
             key_name = self.HID_USAGE_TO_NAME.get(hid_key, "")
             if key_name:
-                # Map HID name back to Qt Key name for display
-                qt_name_map = {
-                    "Enter": "Return",
-                    "Escape": "Esc",
-                    "Delete": "Del",
-                    "Insert": "Ins",
-                    "PageUp": "PgUp",
-                    "PageDown": "PgDown",
-                }
-                qt_name = qt_name_map.get(key_name, key_name)
-                self.key_select.setKeySequence(QtGui.QKeySequence(qt_name))
+                if key_name in self.special_key_names:
+                    self.special_key_combo.blockSignals(True)
+                    idx = self.special_key_combo.findData(key_name)
+                    if idx >= 0:
+                        self.special_key_combo.setCurrentIndex(idx)
+                    self.special_key_combo.blockSignals(False)
+                    self.key_select.setKeySequence(QtGui.QKeySequence(""))
+                else:
+                    self.special_key_combo.blockSignals(True)
+                    self.special_key_combo.setCurrentIndex(0)
+                    self.special_key_combo.blockSignals(False)
+                    # Map HID name back to Qt Key name for display
+                    qt_name_map = {
+                        "Enter": "Return",
+                        "Escape": "Esc",
+                        "Delete": "Del",
+                        "Insert": "Ins",
+                        "PageUp": "PgUp",
+                        "PageDown": "PgDown",
+                    }
+                    qt_name = qt_name_map.get(key_name, key_name)
+                    self.key_select.setKeySequence(QtGui.QKeySequence(qt_name))
             else:
                 self.key_select.setKeySequence(QtGui.QKeySequence(""))
             
@@ -568,12 +596,13 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.macro_repeat_count.setVisible(False)
 
-        if action == "Fire Key":
-            self.special_delay_spin.setValue(40)
-            self.special_repeat_spin.setValue(3)
-        elif action == "Triple Click":
-            self.special_delay_spin.setValue(50)
-            self.special_repeat_spin.setValue(3)
+    def _on_special_key_select(self) -> None:
+        if self.special_key_combo.currentData():
+            self.key_select.setKeySequence(QtGui.QKeySequence(""))
+
+    def _clear_special_key_selection(self) -> None:
+        if self.special_key_combo.currentIndex() != 0:
+            self.special_key_combo.setCurrentIndex(0)
 
     def _build_macros_tab(self) -> QtWidgets.QWidget:
         """Build the visual macro editor tab with event list, recording, and preview."""
@@ -1065,7 +1094,12 @@ class MainWindow(QtWidgets.QMainWindow):
         header = QtWidgets.QLabel("DPI slots (use presets or raw values from captures)")
         layout.addWidget(header)
 
-        self.dpi_rows: list[tuple[QtWidgets.QComboBox, QtWidgets.QSpinBox, QtWidgets.QSpinBox]] = []
+        self.dpi_rows: list[tuple[
+            QtWidgets.QComboBox,
+            QtWidgets.QSpinBox,
+            QtWidgets.QSpinBox,
+            QtWidgets.QSpinBox,
+        ]] = []
         for slot in range(5):
             row = QtWidgets.QHBoxLayout()
             label = QtWidgets.QLabel(f"Slot {slot + 1}")
@@ -1077,20 +1111,28 @@ class MainWindow(QtWidgets.QMainWindow):
                 combo.addItem(f"{dpi} DPI", dpi)
             combo.currentIndexChanged.connect(self._sync_dpi_presets)
 
+            dpi_spin = QtWidgets.QSpinBox()
+            dpi_spin.setRange(100, 20000)
+            dpi_spin.setSingleStep(100)
+            dpi_spin.valueChanged.connect(lambda _=None, row_index=slot: self._on_dpi_spin_changed(row_index))
+
             value_spin = QtWidgets.QSpinBox()
             value_spin.setRange(0, 255)
+            value_spin.valueChanged.connect(lambda _=None, row_index=slot: self._on_dpi_value_changed(row_index))
             tweak_spin = QtWidgets.QSpinBox()
             tweak_spin.setRange(0, 255)
 
             row.addWidget(label)
             row.addWidget(combo)
+            row.addWidget(QtWidgets.QLabel("DPI"))
+            row.addWidget(dpi_spin)
             row.addWidget(QtWidgets.QLabel("Value"))
             row.addWidget(value_spin)
             row.addWidget(QtWidgets.QLabel("Tweak"))
             row.addWidget(tweak_spin)
             layout.addLayout(row)
 
-            self.dpi_rows.append((combo, value_spin, tweak_spin))
+            self.dpi_rows.append((combo, dpi_spin, value_spin, tweak_spin))
 
         apply_button = QtWidgets.QPushButton("Apply DPI Slots")
         apply_button.clicked.connect(self._apply_dpi)
@@ -1395,14 +1437,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 "mode": count
             }
         elif action == "Keyboard Key":
-            seq = self.key_select.keySequence()
-            if seq.isEmpty():
-                QtWidgets.QMessageBox.warning(self, "Invalid", "Please press a key combination.")
+            special_key = self.special_key_combo.currentData()
+            if special_key:
+                key_name = special_key
+            else:
+                seq = self.key_select.keySequence()
+                if seq.isEmpty():
+                    QtWidgets.QMessageBox.warning(self, "Invalid", "Please press a key combination or choose a special key.")
+                    return
+                # Use our custom capture logic (first key)
+                key_name = seq.toString().split('+')[-1]
+
+            if not key_name:
+                QtWidgets.QMessageBox.warning(self, "Invalid", "Please press a key combination or choose a special key.")
                 return
             
-            # Use our custom capture logic (first key)
-            key_name = seq.toString().split('+')[-1]
-            hid_key = vp.HID_KEY_USAGE.get(key_name.upper(), 0)
+            hid_key = vp.HID_KEY_USAGE.get(key_name, 0) or vp.HID_KEY_USAGE.get(key_name.upper(), 0)
             
             modifier = 0
             if self.mod_ctrl.isChecked(): modifier |= vp.MODIFIER_CTRL
@@ -1612,24 +1662,69 @@ class MainWindow(QtWidgets.QMainWindow):
         self._send_reports(reports, f"Polling {rate} Hz")
 
     def _sync_dpi_presets(self) -> None:
-        for combo, value_spin, tweak_spin in self.dpi_rows:
+        for combo, dpi_spin, value_spin, tweak_spin in self.dpi_rows:
             dpi_value = combo.currentData()
             if dpi_value is None:
                 continue
             preset = vp.DPI_PRESETS[dpi_value]
+            dpi_spin.blockSignals(True)
             value_spin.blockSignals(True)
             tweak_spin.blockSignals(True)
+            dpi_spin.setValue(dpi_value)
             value_spin.setValue(preset["value"])
-            tweak_spin.setValue(preset["tweak"])
+            tweak_spin.setValue(vp.dpi_value_to_tweak(preset["value"]))
+            dpi_spin.blockSignals(False)
             value_spin.blockSignals(False)
             tweak_spin.blockSignals(False)
 
     def _apply_dpi(self) -> None:
         reports = [vp.build_simple(0x03)]
-        for slot, (_, value_spin, tweak_spin) in enumerate(self.dpi_rows):
-            reports.append(vp.build_dpi(slot, value_spin.value(), tweak_spin.value()))
+        for slot, (_, _, value_spin, tweak_spin) in enumerate(self.dpi_rows):
+            value = value_spin.value()
+            tweak = vp.dpi_value_to_tweak(value)
+            tweak_spin.setValue(tweak)
+            reports.append(vp.build_dpi(slot, value, tweak))
         # reports.append(vp.build_simple(0x04)) # No trailing 0x04
         self._send_reports(reports, "DPI slots")
+
+    def _on_dpi_spin_changed(self, row_index: int) -> None:
+        if row_index >= len(self.dpi_rows):
+            return
+        combo, dpi_spin, value_spin, tweak_spin = self.dpi_rows[row_index]
+        dpi_value = dpi_spin.value()
+        value = vp.dpi_to_value(dpi_value)
+        tweak = vp.dpi_value_to_tweak(value)
+
+        combo.blockSignals(True)
+        idx = combo.findData(dpi_value)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+        value_spin.blockSignals(True)
+        tweak_spin.blockSignals(True)
+        value_spin.setValue(value)
+        tweak_spin.setValue(tweak)
+        value_spin.blockSignals(False)
+        tweak_spin.blockSignals(False)
+
+    def _on_dpi_value_changed(self, row_index: int) -> None:
+        if row_index >= len(self.dpi_rows):
+            return
+        combo, dpi_spin, value_spin, tweak_spin = self.dpi_rows[row_index]
+        value = value_spin.value()
+        tweak = vp.dpi_value_to_tweak(value)
+        dpi_value = vp.value_to_dpi(value)
+
+        combo.blockSignals(True)
+        combo.setCurrentIndex(0)
+        combo.blockSignals(False)
+
+        dpi_spin.blockSignals(True)
+        tweak_spin.blockSignals(True)
+        dpi_spin.setValue(dpi_value)
+        tweak_spin.setValue(tweak)
+        dpi_spin.blockSignals(False)
+        tweak_spin.blockSignals(False)
 
     def _send_built_report(self) -> None:
         if not self._require_device():
@@ -1722,7 +1817,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         closest_dpi = dpi
                 
                 if i < len(self.dpi_rows):
-                    combo, value_spin, tweak_spin = self.dpi_rows[i]
+                    combo, dpi_spin, value_spin, tweak_spin = self.dpi_rows[i]
                     combo.blockSignals(True)
                     # Find DPI in combo
                     found = False
@@ -1734,14 +1829,16 @@ class MainWindow(QtWidgets.QMainWindow):
                     if not found:
                         combo.setCurrentIndex(0) # Custom
                     
+                    dpi_spin.blockSignals(True)
+                    value_spin.blockSignals(True)
+                    tweak_spin.blockSignals(True)
+                    dpi_spin.setValue(vp.value_to_dpi(val))
                     value_spin.setValue(val)
-                    # Tweak is usually fixed for the preset, but let's try reading it too?
-                    # Captures show tweak at offset+2? Let's check DPI_PRESETS again.
-                    # Actually, let's just use our presets for now to be safe.
-                    preset = vp.DPI_PRESETS.get(closest_dpi)
-                    if preset:
-                        tweak_spin.setValue(preset["tweak"])
-                    
+                    tweak_spin.setValue(page0[offset + 3])
+                    dpi_spin.blockSignals(False)
+                    value_spin.blockSignals(False)
+                    tweak_spin.blockSignals(False)
+
                     combo.blockSignals(False)
 
             # 2. Polling Rate
