@@ -1,0 +1,28 @@
+# Track Plan: Improve RGB Functionality
+
+This plan details the steps to reverse-engineer and implement accurate RGB control, including the 27 standard presets and arbitrary color picking.
+
+## Phase 1: Protocol Analysis & Documentation [checkpoint: c5f7328]
+Goal: Extract the exact RGB command structure and color formula from packet captures.
+
+- [x] Task: Analyze RGB Captures (Extract raw bytes for the 27 Quick Pick colors from `new-usbcap/*.pcapng`) <!-- id: 0 -->
+- [x] Task: Reverse-Engineer Color Formula (Determine if the mouse uses standard RGB, GRB, or a custom mapping/normalization) <!-- id: 1 -->
+- [x] Task: Update `PROTOCOL.md` (Document the refined RGB packet structure and the 27 preset values)
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Analysis' (Protocol in workflow.md) c5f7328
+
+## Phase 2: Protocol Implementation (TDD)
+Goal: Update the core protocol library to support the new RGB logic.
+
+- [ ] Task: Write Tests for RGB Packet Building (Define expected bytes for known presets and arbitrary colors)
+- [ ] Task: Refactor `venus_protocol.py` RGB Logic (Implement the `build_rgb` function using the discovered formula)
+- [ ] Task: Verify Protocol Tests (Ensure all RGB packet tests pass with high coverage)
+- [ ] Task: Conductor - User Manual Verification 'Phase 2: Protocol' (Protocol in workflow.md)
+
+## Phase 3: GUI Refactor (TDD)
+Goal: Enhance the RGB tab with a preset grid and accurate color picker.
+
+- [ ] Task: Write UI Tests for RGB Tab (Verify preset grid population and color picker signal handling)
+- [ ] Task: Implement Preset Grid (Add a grid of 27 swatches to the RGB tab for quick access)
+- [ ] Task: Update Color Picker Integration (Connect the native color picker to the refined protocol logic)
+- [ ] Task: Final UX Polish (Ensure tooltips and labels accurately reflect the new capabilities)
+- [ ] Task: Conductor - User Manual Verification 'Phase 3: GUI Refactor' (Protocol in workflow.md)
