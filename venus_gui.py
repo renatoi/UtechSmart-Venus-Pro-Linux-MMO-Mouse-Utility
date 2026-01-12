@@ -1968,8 +1968,29 @@ class MainWindow(QtWidgets.QMainWindow):
             device = vp.VenusDevice(self.device_path)
             device.open()
             
-            # Enter read mode with handshake only (Windows sends 0x03 to start reads)
-            device.send(vp.build_simple(0x03))
+            # Retry loop for initial handshake
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    # Enter read mode: Send 0x04 (Prepare) then 0x03 (Handshake)
+                    # This aligns with the write flow and improves stability
+                    device.send(vp.build_simple(0x04))
+                    time.sleep(0.05)
+                    device.send(vp.build_simple(0x03))
+                    
+                    # Try reading Page 0 to verify connection
+                    device.read_flash(0, 0, 8)
+                    break # Success
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        self._log(f"Read handshake failed (Attempt {attempt+1}): {e}. Retrying...")
+                        time.sleep(0.5)
+                        # Re-open might be needed?
+                        device.close()
+                        time.sleep(0.1)
+                        device.open()
+                    else:
+                        raise e
             
             # Page 0 contains most settings
             page0 = bytearray()

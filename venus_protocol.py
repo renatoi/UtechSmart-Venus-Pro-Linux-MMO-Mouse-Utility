@@ -53,9 +53,9 @@ def unlock_device():
             padded = data.ljust(17, b'\x00')
             dev.ctrl_transfer(0x21, 0x09, 0x0308, 1, padded)
 
-        # 1. Reset (Cmd 09)
-        send_magic(bytes([0x08, 0x09]))
-        time.sleep(0.5)
+        # 1. SKIP Reset (Cmd 09) - Causes instability/re-enumeration issues
+        # send_magic(bytes([0x08, 0x09]))
+        # time.sleep(0.5)
         
         # 2. Magic packet 1 (CMD 4D)
         # 08 4D 05 50 00 55 00 55 00 55 91
