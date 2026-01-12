@@ -435,8 +435,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.editor_layout.addWidget(self.media_group)
         self.editor_layout.addWidget(self.dpi_group)
         
-        self.apply_button = QtWidgets.QPushButton("Apply Binding")
+        self.apply_button = QtWidgets.QPushButton("Stage Binding")
         self.apply_button.setStyleSheet("font-weight: bold; padding: 5px;")
+        self.apply_button.setToolTip("Queue this change. You must click 'Apply All Changes' to write to device.")
         self.apply_button.clicked.connect(self._apply_button_binding)
         self.editor_layout.addWidget(self.apply_button)
 
@@ -446,11 +447,13 @@ class MainWindow(QtWidgets.QMainWindow):
         
         self.apply_all_button = QtWidgets.QPushButton("Apply All Changes")
         self.apply_all_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 5px;")
+        self.apply_all_button.setToolTip("Write all staged changes to the device memory.")
         self.apply_all_button.clicked.connect(self._commit_staged_changes)
         self.apply_all_button.setEnabled(False) # Default disabled
         
         self.discard_all_button = QtWidgets.QPushButton("Discard All")
         self.discard_all_button.setStyleSheet("background-color: #f44336; color: white; font-weight: bold; padding: 5px;")
+        self.discard_all_button.setToolTip("Clear all pending changes and revert to current device state.")
         self.discard_all_button.clicked.connect(self._discard_staged_changes)
         self.discard_all_button.setEnabled(False)
         
