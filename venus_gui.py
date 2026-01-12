@@ -4,6 +4,7 @@ import sys
 import json
 import time
 from pathlib import Path
+from copy import deepcopy
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -438,6 +439,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.apply_button.setStyleSheet("font-weight: bold; padding: 5px;")
         self.apply_button.clicked.connect(self._apply_button_binding)
         self.editor_layout.addWidget(self.apply_button)
+
+        # Batch Actions
+        batch_group = QtWidgets.QGroupBox("Batch Actions")
+        batch_layout = QtWidgets.QHBoxLayout(batch_group)
+        
+        self.apply_all_button = QtWidgets.QPushButton("Apply All Changes")
+        self.apply_all_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 5px;")
+        self.apply_all_button.clicked.connect(self._commit_staged_changes)
+        self.apply_all_button.setEnabled(False) # Default disabled
+        
+        self.discard_all_button = QtWidgets.QPushButton("Discard All")
+        self.discard_all_button.setStyleSheet("background-color: #f44336; color: white; font-weight: bold; padding: 5px;")
+        self.discard_all_button.clicked.connect(self._discard_staged_changes)
+        self.discard_all_button.setEnabled(False)
+        
+        batch_layout.addWidget(self.apply_all_button)
+        batch_layout.addWidget(self.discard_all_button)
+        self.editor_layout.addWidget(batch_group)
 
         # Advanced / Custom Offsets (Restored for logic compatibility)
         self.advanced_group = QtWidgets.QGroupBox("Advanced / Custom Offsets")
@@ -1500,6 +1519,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_staged_visuals(self) -> None:
         """Update button list to show staged vs committed state."""
         staged = self.staging_manager.get_staged_changes()
+        has_changes = len(staged) > 0
+        
+        self.apply_all_button.setEnabled(has_changes)
+        self.discard_all_button.setEnabled(has_changes)
         
         for row in range(self.btn_table.rowCount()):
              key = self.btn_table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
@@ -1516,6 +1539,118 @@ class MainWindow(QtWidgets.QMainWindow):
              else:
                  item_assign.setText("Unknown")
                  item_assign.setForeground(QtGui.QBrush(QtGui.QColor("gray")))
+
+    def _commit_staged_changes(self) -> None:
+        """Commit all staged changes to the device using TransactionController."""
+        if not self._require_device():
+            return
+            
+        if not self.staging_manager.has_changes():
+            return
+
+        # Instantiate controller on demand (to use current device path)
+        # We need a PacketBuilder that mimics self._sync_all_buttons logic but for specific keys
+        # For now, let's reuse the logic inside _sync_all_buttons but adapted for the builder interface.
+        # Ideally, we refactor `_sync_all_buttons` to use a builder class.
+        
+        # Since TransactionController expects a builder with `build_packets(key, action, params)`,
+        # we can define a simple adapter here or refactor more deeply.
+        # Let's use an inner class or simple object for now to keep it localized.
+        
+        class PacketBuilder:
+            def __init__(self, parent):
+                self.parent = parent
+                
+            def build_packets(self, key, action, params):
+                # Reuse logic from _sync_all_buttons (refactored to return list)
+                return self.parent._build_packets_for_key(key, action, params)
+
+        try:
+            device = vp.VenusDevice(self.device_path)
+            device.open()
+            
+            builder = PacketBuilder(self)
+            controller = TransactionController(device, builder)
+            
+            # Progress dialog
+            progress = QtWidgets.QProgressDialog("Applying changes...", "Cancel", 0, 0, self)
+            progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            progress.show()
+            
+            success = controller.execute_transaction(self.staging_manager)
+            
+            progress.close()
+            device.close()
+            
+            if success:
+                # Update local authoritative state
+                # The staging manager is already committed by the controller on success
+                # But we need to update self.button_assignments to match
+                # Actually, StagingManager.base_state should probably replace self.button_assignments
+                # or we sync them.
+                # Let's update self.button_assignments from the now-committed base_state
+                self.button_assignments = deepcopy(self.staging_manager.base_state)
+                
+                self._update_staged_visuals()
+                QtWidgets.QMessageBox.information(self, "Success", "All changes applied successfully.")
+            else:
+                QtWidgets.QMessageBox.critical(self, "Error", "Failed to apply changes. Device might be disconnected.")
+                
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", str(e))
+
+    def _discard_staged_changes(self) -> None:
+        """Discard all staged changes."""
+        self.staging_manager.clear_stage()
+        self._update_staged_visuals()
+
+    def _build_packets_for_key(self, key: str, action: str, params: dict) -> list[bytes]:
+        """Helper to build packets for a single key binding."""
+        reports = []
+        # Resolve addresses
+        # Note: This logic duplicates _sync_all_buttons. Should eventually replace it.
+        code_hi_base, code_lo, apply_offset_base = self._resolve_profile(key, use_fallback=True)
+        profile_pages = [0x00, 0x40, 0x80, 0xC0]
+        
+        for page in profile_pages:
+            current_code_hi = code_hi_base + page
+            
+            if action == "Keyboard Key":
+                hid_key = params.get("key", 0)
+                modifier = params.get("mod", 0)
+                # Page 1 Write (Key Def)
+                reports.extend(vp.build_key_binding(current_code_hi, code_lo, hid_key, modifier))
+                # Page 0 Bind (Type 05)
+                reports.append(vp.build_keyboard_bind(apply_offset_base, page=page))
+
+            elif action == "Disabled":
+                reports.append(vp.build_disabled(apply_offset_base, page=page))
+                
+            elif action in ["Left Click", "Right Click", "Middle Click", "Forward", "Back"]:
+                 val_map = {"Left Click": 0x01, "Right Click": 0x02, "Middle Click": 0x04, "Back": 0x08, "Forward": 0x10}
+                 val = val_map.get(action, 0)
+                 reports.append(vp.build_mouse_param(apply_offset_base, val, page=page))
+            
+            elif action == "DPI Control":
+                 func_id = params.get("func", 1) # 1=Loop, 2=+, 3=-
+                 dummy_key = 0x23 if func_id==1 else (0x24 if func_id==2 else 0x25)
+                 reports.extend(vp.build_key_binding(current_code_hi, code_lo, dummy_key, 0))
+                 reports.append(vp.build_apply_binding(apply_offset_base, action_type=2, action_code=0x50, modifier=func_id, page=page))
+
+            elif action in ["Fire Key", "Triple Click"]:
+                 delay = params.get("delay", 40)
+                 rep = params.get("repeat", 3)
+                 reports.append(vp.build_special_binding(apply_offset_base, delay, rep, page=page))
+            
+            elif action == "Media Key":
+                 reports.append(vp.build_apply_binding(apply_offset_base, action_type=5, action_code=0x51, page=page))
+            
+            elif action == "Macro":
+                 idx = params.get("index", 1)
+                 mode = params.get("mode", vp.MACRO_REPEAT_ONCE)
+                 reports.append(vp.build_macro_bind(apply_offset_base, idx-1, mode, page=page))
+                 
+        return reports
 
 
     def _upload_macro(self) -> None:
@@ -2028,7 +2163,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._log(f"  DEBUG: Resolved Action: {action} {params}")
 
             self._log("Button bindings parsed.")
-            self._update_all_ui_from_assignments()
+            
+            # Load base state into staging manager
+            self.staging_manager.load_base_state(self.button_assignments)
+            self._update_staged_visuals()
             
             # No trailing commit needed after reads - device auto-exits read mode
             # Sending 0x04/0x03 here would RE-ENTER config mode and break button inputs!
