@@ -152,7 +152,7 @@ class MacroRunner(QtCore.QThread):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Venus Pro Config (Reverse Engineering)")
+        self.setWindowTitle("Venus Pro Config v0.2.1 (Reverse Engineering)")
         self.resize(1200, 780)
 
         # Store device path instead of keeping device open (prevents blocking mouse input)
@@ -160,6 +160,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.device_infos: list[vp.DeviceInfo] = []
         self.custom_profiles: dict[str, tuple[int, int, int]] = {}
         self.button_assignments: dict[str, dict] = {} # Stored button settings from device
+        
+        # Load macro names from config EARLY (before UI build)
+        self.config_dir = Path.home() / ".config" / "venus_pro_linux"
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.macro_config_file = self.config_dir / "macros.json"
+        self.macro_names: dict[int, str] = {}
+        self._load_macro_names()
 
 
         root = QtWidgets.QWidget()
@@ -203,6 +210,7 @@ class MainWindow(QtWidgets.QMainWindow):
         #         self._log(f"Init: Unlock failed: {e}")
 
         self._log("Init: Refreshing and connecting...")
+        
         self._refresh_and_connect()
 
 
@@ -648,15 +656,60 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.special_key_combo.currentIndex() != 0:
             self.special_key_combo.setCurrentIndex(0)
 
+    def _load_macro_names(self) -> None:
+        """Load macro names from local JSON config."""
+        if self.macro_config_file.exists():
+            try:
+                import json
+                with open(self.macro_config_file, 'r') as f:
+                    data = json.load(f)
+                    # Convert keys to int
+                    self.macro_names = {int(k): v for k, v in data.items()}
+            except Exception as e:
+                self._log(f"Config: Failed to load macro names: {e}")
+        
+        # Ensure defaults for missing slots
+        for i in range(1, 13):
+            if i not in self.macro_names:
+                self.macro_names[i] = f"Macro {i}"
+
+    def _save_macro_names(self) -> None:
+        """Save macro names to local JSON config."""
+        try:
+            import json
+            with open(self.macro_config_file, 'w') as f:
+                json.dump(self.macro_names, f, indent=2)
+        except Exception as e:
+            self._log(f"Config: Failed to save macro names: {e}")
+
     def _build_macros_tab(self) -> QtWidgets.QWidget:
         """Build the visual macro editor tab with event list, recording, and preview."""
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        
+        # --- LEFT: Macro List ---
+        left_widget = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
+        left_layout.addWidget(QtWidgets.QLabel("Stored Macros (Local Names):"))
+        self.macro_list = QtWidgets.QListWidget()
+        self.macro_list.itemClicked.connect(self._load_macro_from_slot_selection)
+        left_layout.addWidget(self.macro_list)
+        
+        self._refresh_macro_list()
+        
+        left_widget.setLayout(left_layout)
+        splitter.addWidget(left_widget)
+
+        # --- RIGHT: Editor ---
+        right_widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(right_widget)
+        # layout.setContentsMargins(10, 0, 0, 0) # Already handled by splitter mostly
 
         # --- Macro Name ---
         name_layout = QtWidgets.QHBoxLayout()
         name_layout.addWidget(QtWidgets.QLabel("Macro Name:"))
-        self.macro_name_edit = QtWidgets.QLineEdit("my_macro")
+        self.macro_name_edit = QtWidgets.QLineEdit("Macro 1")
         name_layout.addWidget(self.macro_name_edit, stretch=1)
         layout.addLayout(name_layout)
 
@@ -794,11 +847,75 @@ class MainWindow(QtWidgets.QMainWindow):
         bind_layout.addWidget(upload_button, 2, 0, 1, 2)
         bind_layout.addWidget(bind_button, 2, 2, 1, 2)
         bind_layout.addWidget(load_button, 2, 4, 1, 2)
+        
+        # Save Button (New)
+        save_button = QtWidgets.QPushButton("💾 Save Macro")
+        save_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 6px;")
+        save_button.setToolTip("Save macro to device and update local name.")
+        save_button.clicked.connect(self._save_current_macro)
+        bind_layout.addWidget(save_button, 3, 0, 1, 6) # Full width
 
         layout.addWidget(bind_group)
         layout.addStretch()
+        
+        right_widget.setLayout(layout)
+        splitter.addWidget(right_widget)
+        splitter.setStretchFactor(0, 1) # List
+        splitter.setStretchFactor(1, 2) # Editor
 
-        return widget
+        return splitter
+
+    def _refresh_macro_list(self) -> None:
+        """Refresh the macro list widget."""
+        self.macro_list.clear()
+        for i in range(1, 13):
+            name = self.macro_names.get(i, f"Macro {i}")
+            item = QtWidgets.QListWidgetItem(f"{i}: {name}")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, i)
+            self.macro_list.addItem(item)
+
+    def _load_macro_from_slot_selection(self, item: QtWidgets.QListWidgetItem) -> None:
+        """Load macro from list selection."""
+        index = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        # 1. Update Index Spinner
+        self.macro_index_spin.setValue(index) # This might seem redundant if hidden? No, bind group uses bind_index_spin
+        self.macro_bind_index_spin.setValue(index)
+        
+        # 2. Update Name Field
+        name = self.macro_names.get(index, f"Macro {index}")
+        self.macro_name_edit.setText(name)
+        
+        # 3. Load Data from Device
+        self._load_macro_from_slot(index)
+
+    def _save_current_macro(self) -> None:
+        """Save current macro: Check Name -> Upload -> Save Config."""
+        name = self.macro_name_edit.text().strip()
+        if not name:
+            QtWidgets.QMessageBox.warning(self, "Invalid Name", "Macro name cannot be empty.")
+            return
+
+        index = self.macro_bind_index_spin.value() # Use the target slot
+        
+        # Unique Name Check
+        for i, existing_name in self.macro_names.items():
+            if i != index and existing_name.lower() == name.lower():
+                 QtWidgets.QMessageBox.warning(self, "Duplicate Name", f"Macro name '{name}' is already used by Slot {i}.")
+                 return
+        
+        # Update Name Dict
+        self.macro_names[index] = name
+        self._save_macro_names()
+        
+        # Upload to Device
+        self._upload_macro() # This uses macro_bind_index_spin
+        
+        # Refresh List
+        self._refresh_macro_list()
+        
+        # Clear Staged visual (if any)? 
+        # _upload_macro handles device communication.
+        QtWidgets.QMessageBox.information(self, "Saved", f"Macro '{name}' saved to Slot {index}.")
 
     def _toggle_recording(self, checked: bool) -> None:
         """Start or stop macro recording."""
@@ -1595,6 +1712,69 @@ class MainWindow(QtWidgets.QMainWindow):
         # UPDATE UI
         self._update_staged_visuals()
         
+    def _get_binding_description(self, action: str, params: dict) -> str:
+        """Get a descriptive string for a button binding."""
+        if action == "Keyboard Key":
+            hid_key = params.get("key", 0)
+            modifier = params.get("mod", 0)
+            key_name = self.HID_USAGE_TO_NAME.get(hid_key, f"0x{hid_key:02X}")
+            
+            # Use Qt names for display if available
+            qt_name_map = {
+                "Enter": "Return", "Escape": "Esc", "Delete": "Del", "Insert": "Ins",
+                "PageUp": "PgUp", "PageDown": "PgDown", "Space": "Space"
+            }
+            display_key = qt_name_map.get(key_name, key_name)
+            
+            mods = []
+            if modifier & vp.MODIFIER_CTRL: mods.append("Ctrl")
+            if modifier & vp.MODIFIER_SHIFT: mods.append("Shift")
+            if modifier & vp.MODIFIER_ALT: mods.append("Alt")
+            if modifier & vp.MODIFIER_WIN: mods.append("Win")
+            
+            if mods:
+                return f"Key: {display_key} ({'+'.join(mods)})"
+            return f"Key: {display_key}"
+
+        elif action == "Macro":
+            index = params.get("index", 1)
+            # mode is either a constant (1=Once, 2=Count?, F0=Hold, F1=Toggle) or raw count
+            mode_val = params.get("mode", 1)
+            
+            mode_str = "Custom"
+            if mode_val == vp.MACRO_REPEAT_ONCE: mode_str = "Once"
+            elif mode_val == vp.MACRO_REPEAT_HOLD: mode_str = "Hold"
+            elif mode_val == vp.MACRO_REPEAT_TOGGLE: mode_str = "Toggle"
+            else: mode_str = f"x{mode_val}"
+            
+            return f"Macro {index} ({mode_str})"
+
+        elif action == "DPI Control":
+            func = params.get("func", 1)
+            func_map = {1: "Loop", 2: "Up", 3: "Down"}
+            return f"DPI {func_map.get(func, 'Unknown')}"
+            
+        elif action == "Disabled":
+            return "Disabled"
+            
+        elif action == "Media Key":
+            code = params.get("code", 0)
+            # Reverse lookup media key
+            name = "Unknown"
+            for k, v in vp.MEDIA_KEY_CODES.items():
+                if v == code:
+                    name = k
+                    break
+            return f"Media: {name}"
+            
+        elif action in ["Fire Key", "Triple Click"]:
+             delay = params.get("delay", 40)
+             repeat = params.get("repeat", 3)
+             return f"{action} ({delay}ms, x{repeat})"
+
+        # Default fallback for simple actions (Left Click, etc.)
+        return action
+
     def _update_staged_visuals(self) -> None:
         """Update button list to show staged vs committed state."""
         staged = self.staging_manager.get_staged_changes()
@@ -1608,13 +1788,25 @@ class MainWindow(QtWidgets.QMainWindow):
              item_assign = self.btn_table.item(row, 1)
              
              if key in staged:
-                 action = staged[key]["action"]
-                 item_assign.setText(f"{action} *")
-                 item_assign.setForeground(QtGui.QBrush(QtGui.QColor("orange")))
+                 entry = staged[key]
+                 desc = self._get_binding_description(entry["action"], entry["params"])
+                 item_assign.setText(f"{desc} *")
+                 # Orange/Yellow for staged
+                 item_assign.setForeground(QtGui.QBrush(QtGui.QColor("#FFA500"))) 
+                 # Bold font for emphasis
+                 font = item_assign.font()
+                 font.setBold(True)
+                 item_assign.setFont(font)
+                 
              elif key in self.button_assignments:
-                 action = self.button_assignments[key]["action"]
-                 item_assign.setText(action)
-                 item_assign.setForeground(QtGui.QBrush(QtGui.QColor("white"))) # Default text color (or standard palette)
+                 entry = self.button_assignments[key]
+                 desc = self._get_binding_description(entry["action"], entry["params"])
+                 item_assign.setText(desc)
+                 # Standard white/gray for committed
+                 item_assign.setForeground(QtGui.QBrush(QtGui.QColor("white")))
+                 font = item_assign.font()
+                 font.setBold(False)
+                 item_assign.setFont(font)
              else:
                  item_assign.setText("Unknown")
                  item_assign.setForeground(QtGui.QBrush(QtGui.QColor("gray")))
@@ -2427,54 +2619,12 @@ class MainWindow(QtWidgets.QMainWindow):
             if key in self.button_assignments:
                 assign = self.button_assignments[key]
                 action = assign["action"]
-                desc = action
-                if action == "Keyboard Key":
-                    k = assign["params"].get("key", 0)
-                    k_name = self.HID_USAGE_TO_NAME.get(k, f"{k}")
-                    
-                    # Also show modifiers if present
-                    mod = assign["params"].get("mod", 0)
-                    mod_str = ""
-                    if mod:
-                        parts = []
-                        if mod & vp.MODIFIER_CTRL: parts.append("Ctrl")
-                        if mod & vp.MODIFIER_SHIFT: parts.append("Shift")
-                        if mod & vp.MODIFIER_ALT: parts.append("Alt")
-                        if mod & vp.MODIFIER_WIN: parts.append("Win")
-                        mod_str = "+".join(parts) + "+"
-
-                    desc = f"Key: {mod_str}{k_name}"
-                    
-                elif action == "DPI Control":
-                    func = assign["params"].get("dpi_func", 0)
-                    if func == 0x01: desc = "DPI Loop"
-                    elif func == 0x02: desc = "DPI +"
-                    elif func == 0x03: desc = "DPI -"
-                    else: desc = f"DPI Control (0x{func:02X})"
-                elif action == "Media Key":
-                    media_code = assign["params"].get("key", 0)
-                    # Reverse lookup media code to name
-                    media_name = None
-                    for name, code in vp.MEDIA_KEY_CODES.items():
-                        if code == media_code:
-                            media_name = name
-                            break
-                    desc = f"Media: {media_name or f'0x{media_code:02X}'}"
-                elif action == "Macro":
-                    macro_name = assign['params'].get('name', '')
-                    macro_idx = assign['params'].get('index', 0)
-                    macro_mode = assign['params'].get('mode', vp.MACRO_REPEAT_ONCE)
-                    macro_count = assign['params'].get('count', 1)
-
-                    mode_str = ""
-                    if macro_mode == vp.MACRO_REPEAT_ONCE: mode_str = "Once"
-                    elif macro_mode == vp.MACRO_REPEAT_HOLD: mode_str = "Hold"
-                    elif macro_mode == vp.MACRO_REPEAT_TOGGLE: mode_str = "Toggle"
-                    elif macro_mode == vp.MACRO_REPEAT_COUNT: mode_str = f"{macro_count}x"
-                    
-                    desc = f"Macro {macro_idx}: {macro_name} ({mode_str})"
+                desc = self._get_binding_description(action, assign.get("params", {}))
                 
                 self.btn_table.item(row, 1).setText(desc)
+                # Reset color
+                self.btn_table.item(row, 1).setForeground(QtGui.QBrush(QtGui.QColor("white")))
+
 
     def _load_macro_from_slot_on_tab(self) -> None:
         """Load macro from slot using the Macros tab's slot index spinner."""
@@ -2486,13 +2636,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.macro_index_spin.setValue(slot_index)
         self._load_macro_from_slot()
 
-    def _load_macro_from_slot(self) -> None:
+    def _load_macro_from_slot(self, slot_index: int | None = None) -> None:
         """Read macro from selected slot and populate table."""
         if not self._require_device():
             return
             
+        if slot_index is None:
             slot_index = self.macro_index_spin.value()
-            start_page, start_offset = vp.get_macro_slot_info(slot_index - 1)
+            
+        start_page, start_offset = vp.get_macro_slot_info(slot_index - 1)
         
         self._log(f"Reading macro slot {slot_index} (Page 0x{start_page:02X}, Offset 0x{start_offset:02X})")
         
@@ -2549,16 +2701,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 b0 = raw_macro[event_offset]
                 b1 = raw_macro[event_offset+1]
                 
-                if b0 not in (0x81, 0x41):
+                if b0 not in (0x81, 0x41, 0x80, 0x40):
                     break
                     
                 keycode = b1
                 delay = (raw_macro[event_offset+3] << 8) | raw_macro[event_offset+4]
-                is_down = (b0 == 0x81)
+                is_down = (b0 == 0x81 or b0 == 0x80)
+                is_modifier = (b0 == 0x80 or b0 == 0x40)
                 
                 key_name = self.HID_USAGE_TO_NAME.get(keycode, f"Key 0x{keycode:02X}")
                 
-                self._add_event_to_table(key_name, is_down, delay)
+                self._add_event_to_table(key_name, is_down, delay, is_modifier)
                 
                 event_offset += 5
                 

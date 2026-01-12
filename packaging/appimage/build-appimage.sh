@@ -2,7 +2,7 @@
 # Build AppImage for Venus Pro Linux utility
 set -e
 
-VERSION="1.0.0"
+VERSION="0.2.1"
 APP_NAME="VenusProLinux"
 SCRIPT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 APP_DIR="/tmp/${APP_NAME}.AppDir"

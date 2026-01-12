@@ -1044,7 +1044,9 @@ class DeviceInfo:
 
 def _device_sort_key(info: DeviceInfo) -> tuple[int, int, str]:
     product_lower = info.product.lower()
-    is_receiver = "receiver" in product_lower
+    # Check string OR explicit PID for receiver
+    is_receiver = "receiver" in product_lower or info.product_id == 0xFA07
+    
     if info.interface_number == 1:
         interface_rank = 0
     elif info.interface_number == 0:
