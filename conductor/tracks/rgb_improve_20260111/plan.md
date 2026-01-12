@@ -13,7 +13,7 @@ Goal: Extract the exact RGB command structure and color formula from packet capt
 ## Phase 2: Protocol Implementation (TDD)
 Goal: Update the core protocol library to support the new RGB logic.
 
-- [ ] Task: Write Tests for RGB Packet Building (Define expected bytes for known presets and arbitrary colors)
+- [x] Task: Write Tests for RGB Packet Building (Define expected bytes for known presets and arbitrary colors) 86481ec
 - [ ] Task: Refactor `venus_protocol.py` RGB Logic (Implement the `build_rgb` function using the discovered formula)
 - [ ] Task: Verify Protocol Tests (Ensure all RGB packet tests pass with high coverage)
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Protocol' (Protocol in workflow.md)
