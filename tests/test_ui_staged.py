@@ -2,7 +2,7 @@ import sys
 import os
 import unittest
 from unittest.mock import MagicMock, patch
-from PyQt6 import QtWidgets, QtCore, QtTest
+from PyQt6 import QtWidgets, QtCore, QtGui, QtTest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -35,7 +35,6 @@ class TestUIStaged(unittest.TestCase):
         self.mock_refresh = self.patcher1.start()
         
         # We need to populate some mock data for BUTTON_PROFILES to verify the table
-        # Format seems to be "Side 1", "Button 4", etc. based on split()[1] usage
         vp.BUTTON_PROFILES = {
             "Side 1": MagicMock(label="Side 1", code_hi=0, code_lo=0, apply_offset=0),
             "Side 2": MagicMock(label="Side 2", code_hi=0, code_lo=0, apply_offset=0)
@@ -47,24 +46,30 @@ class TestUIStaged(unittest.TestCase):
         self.patcher1.stop()
         self.window.close()
 
-    def test_apply_button_initially_enabled(self):
-        """
-        Verify the apply button starts as enabled in the current legacy logic.
-        (Note: The goal of this track is to change this, but first we verify baseline)
-        """
-        # Select a row to enable the right panel
+    def test_stage_change_visuals(self):
+        """Verify that applying a binding updates the table with a visual cue."""
         self.window.btn_table.selectRow(0)
-        self.assertTrue(self.window.apply_button.isEnabled())
+        self.window.action_select.setCurrentText("Left Click")
+        
+        # Click Apply Binding (Should stage)
+        QtTest.QTest.mouseClick(self.window.apply_button, QtCore.Qt.MouseButton.LeftButton)
+        
+        # Verify visual cue (orange text or *)
+        item = self.window.btn_table.item(0, 1)
+        self.assertIn("*", item.text())
+        # Check color match
+        expected_color = QtGui.QColor("orange")
+        self.assertEqual(item.foreground().color(), expected_color)
 
-    def test_apply_button_behavior(self):
-        """Verify we can click the button."""
+    def test_sync_not_called_on_stage(self):
+        """Verify that _sync_all_buttons is NOT called when staging."""
         self.window.btn_table.selectRow(0)
         self.window.action_select.setCurrentText("Disabled")
         
-        # Mock _sync_all_buttons to avoid real sync
+        # Mock _sync_all_buttons
         with patch.object(self.window, '_sync_all_buttons') as mock_sync:
             QtTest.QTest.mouseClick(self.window.apply_button, QtCore.Qt.MouseButton.LeftButton)
-            mock_sync.assert_called_once()
+            mock_sync.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()
