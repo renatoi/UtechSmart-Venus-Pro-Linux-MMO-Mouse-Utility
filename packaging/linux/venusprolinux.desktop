@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Venus Pro Config
+Comment=UtechSmart Venus Pro MMO Mouse Configuration Utility
+Exec=venusprolinux
+Icon=venusprolinux
+Terminal=false
+Type=Application
+Categories=Settings;HardwareSettings;
+Keywords=mouse;configuration;macro;rgb;
+StartupNotify=true
