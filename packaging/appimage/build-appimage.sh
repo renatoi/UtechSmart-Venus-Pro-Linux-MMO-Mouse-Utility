@@ -21,6 +21,8 @@ rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/usr/bin"
 mkdir -p "${APP_DIR}/usr/share/venusprolinux"
 mkdir -p "${APP_DIR}/usr/share/icons/hicolor/512x512/apps"
+mkdir -p "${APP_DIR}/usr/share/metainfo"
+mkdir -p "${APP_DIR}/usr/share/applications"
 
 # Copy application files
 cp "${SCRIPT_DIR}/venus_gui.py" "${APP_DIR}/usr/share/venusprolinux/"
@@ -28,6 +30,7 @@ cp "${SCRIPT_DIR}/venus_protocol.py" "${APP_DIR}/usr/share/venusprolinux/"
 cp "${SCRIPT_DIR}/staging_manager.py" "${APP_DIR}/usr/share/venusprolinux/"
 cp "${SCRIPT_DIR}/transaction_controller.py" "${APP_DIR}/usr/share/venusprolinux/"
 cp "${SCRIPT_DIR}/mouseimg.png" "${APP_DIR}/usr/share/venusprolinux/"
+cp "${SCRIPT_DIR}/com.github.es00bac.venusprolinux.appdata.xml" "${APP_DIR}/usr/share/metainfo/"
 
 # Copy icon
 cp "${SCRIPT_DIR}/icon.png" "${APP_DIR}/usr/share/icons/hicolor/512x512/apps/venusprolinux.png"
@@ -59,8 +62,8 @@ exec python3 "${HERE}/usr/share/venusprolinux/venus_gui.py" "$@"
 EOF
 chmod 755 "${APP_DIR}/AppRun"
 
-# Create desktop file
-cat > "${APP_DIR}/venusprolinux.desktop" << EOF
+# Create desktop file with proper ID in usr/share/applications
+cat > "${APP_DIR}/usr/share/applications/com.github.es00bac.venusprolinux.desktop" << EOF
 [Desktop Entry]
 Name=Venus Pro Config
 Comment=UtechSmart Venus Pro MMO Mouse Configuration Utility
@@ -70,6 +73,10 @@ Terminal=false
 Type=Application
 Categories=Settings;HardwareSettings;
 EOF
+
+# Copy desktop file to root for AppImage
+cp "${APP_DIR}/usr/share/applications/com.github.es00bac.venusprolinux.desktop" "${APP_DIR}/venusprolinux.desktop" # Keep simple one for root just in case
+
 
 # Build AppImage
 cd /tmp

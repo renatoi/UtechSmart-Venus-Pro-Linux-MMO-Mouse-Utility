@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.es00bac.venusprolinux</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Venus Pro Config</name>
+  <summary>Configuration utility for UtechSmart Venus Pro MMO Mouse</summary>
+  <description>
+    <p>
+      Venus Pro Config is a powerful Linux utility for configuring the UtechSmart Venus Pro MMO Gaming Mouse.
+      It works with both the Wireless (Pro) and Wired versions of the mouse.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Full button remapping for all 16 buttons</li>
+      <li>Macro recording and management</li>
+      <li>RGB lighting configuration (Neon, Breathing, Steady)</li>
+      <li>DPI profile settings (up to 16000 DPI)</li>
+      <li>Polling rate adjustment (125Hz - 1000Hz)</li>
+      <li>Profile management (save/load configurations)</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">com.github.es00bac.venusprolinux.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/Es00bac/UtechSmart-Venus-Pro-Linux-MMO-Mouse-Utility/main/Buttons.png</image>
+      <caption>Button Configuration Interface</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/Es00bac/UtechSmart-Venus-Pro-Linux-MMO-Mouse-Utility/main/RGB.png</image>
+      <caption>RGB Lighting Settings</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/Es00bac/UtechSmart-Venus-Pro-Linux-MMO-Mouse-Utility/main/Macros.png</image>
+      <caption>Macro Editor</caption>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://github.com/Es00bac/UtechSmart-Venus-Pro-Linux-MMO-Mouse-Utility</url>
+  <url type="bugtracker">https://github.com/Es00bac/UtechSmart-Venus-Pro-Linux-MMO-Mouse-Utility/issues</url>
+  <developer_name>Es00bac</developer_name>
+  <update_contact>cabewse_at_gmail.com</update_contact>
+</component>
