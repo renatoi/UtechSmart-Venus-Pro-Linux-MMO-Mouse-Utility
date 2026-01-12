@@ -194,13 +194,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Attempt to unlock device (requires root, but try anyway)
         # This will freeze mouse momentarily
-        if vp.PYUSB_AVAILABLE:
-            self._log("Init: Attempting Startup Unlock (PyUSB)...")
-            try:
-                vp.unlock_device()
-                self._log("Init: Unlock command sent.")
-            except Exception as e:
-                self._log(f"Init: Unlock failed: {e}")
+        # if vp.PYUSB_AVAILABLE:
+        #     self._log("Init: Attempting Startup Unlock (PyUSB)...")
+        #     try:
+        #         vp.unlock_device()
+        #         self._log("Init: Unlock command sent.")
+        #     except Exception as e:
+        #         self._log(f"Init: Unlock failed: {e}")
 
         self._log("Init: Refreshing and connecting...")
         self._refresh_and_connect()
@@ -1328,6 +1328,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.device_path = info.path
             self.status_label.setText(f"Ready: {info.product}")
             self._log(f"Connect: Found device: {info.product} at {info.path}")
+            
+            QtWidgets.QApplication.processEvents()
+            
             # Auto-read settings on startup
             self._log("Connect: Triggering auto-read settings...")
             self._read_settings()
@@ -1972,10 +1975,7 @@ class MainWindow(QtWidgets.QMainWindow):
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    # Enter read mode: Send 0x04 (Prepare) then 0x03 (Handshake)
-                    # This aligns with the write flow and improves stability
-                    device.send(vp.build_simple(0x04))
-                    time.sleep(0.05)
+                    # Enter read mode with handshake only (Windows sends 0x03 to start reads)
                     device.send(vp.build_simple(0x03))
                     
                     # Try reading Page 0 to verify connection
