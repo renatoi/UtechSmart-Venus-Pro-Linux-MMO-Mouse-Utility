@@ -507,28 +507,29 @@ def build_rgb(r: int, g: int, b: int, mode: int = RGB_MODE_STEADY, brightness: i
         mode: RGB_MODE_OFF, RGB_MODE_STEADY, or RGB_MODE_BREATHING
         brightness: Brightness percentage 0-100
     
-    Packet format from captures at offset 0x54:
-    08 07 00 00 54 08 [R] [G] [B] [MODE] 01 54 [B1] [B2] 00 00 [checksum]
+    Packet format (Reverse Engineered 2026-01-11):
+    [00, 00, 54, 08, R, G, B, ColorChk, Mode, 54, B1, B2, 00, 00]
     
-    Brightness encoding from wired captures:
-    - B1 + B2 = 0x55 (85 decimal) - checksum constraint
+    Color Checksum (Offset 9):
+    - ColorChk = (0x55 - (R + G + B)) & 0xFF
+    
+    Mode (Offset 10):
+    - 0x01 = Steady
+    - 0x02 = Breathing/Neon (Assumed)
+    
+    Brightness (Offset 12/13):
     - B1 = percent × 3, capped at 255, minimum 1
     - B2 = (0x55 - B1) & 0xFF
-    
-    LED Mode codes:
-    - 0x56 = Steady (solid color)
-    - 0x57 = Neon (rainbow cycle)
     """
     r = max(0, min(255, r))
     g = max(0, min(255, g))
     b = max(0, min(255, b))
     
-    # Mode byte: 0x56 for steady, 0x57 for neon/animated
-    # Default to steady mode (0x56) for solid colors
-    mode_byte = 0x56 if mode == RGB_MODE_STEADY else 0x57
+    # Calculate Color Checksum
+    color_sum = (r + g + b) & 0xFF
+    color_chk = (0x55 - color_sum) & 0xFF
     
-    # Brightness encoding: B1 = percent × 3 (capped), B2 = (0x55 - B1) & 0xFF
-    # From captures: 0% = 0x01, 10% = 0x1e (30), 20% = 0x3c (60), 100% = 0xff
+    # Brightness encoding
     b1 = max(1, min(255, int(brightness * 3)))
     b2 = (0x55 - b1) & 0xFF
     
@@ -541,11 +542,11 @@ def build_rgb(r: int, g: int, b: int, mode: int = RGB_MODE_STEADY, brightness: i
             r,
             g,
             b,
-            mode_byte,  # 0x56=steady, 0x57=neon
-            0x01,  # Constant
-            0x54,  # Constant (matches offset)
-            b1,    # Brightness value
-            b2,    # Brightness complement (B1 + B2 = 0x55)
+            color_chk,  # Checksum for color
+            mode,       # Mode (0x01=Steady)
+            0x54,       # Constant
+            b1,         # Brightness value
+            b2,         # Brightness complement
             0x00,
             0x00,
         ]
