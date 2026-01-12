@@ -386,8 +386,8 @@ BUTTON_TYPE_RGB_TOGGLE = 0x08  # Toggle RGB LED
 # RGB LED modes
 RGB_MODE_OFF = 0x00
 RGB_MODE_STEADY = 0x01
-RGB_MODE_BREATHING = 0x02
-RGB_MODE_NEON = 0x02  # Same as breathing with different params
+RGB_MODE_NEON = 0x02
+RGB_MODE_BREATHING = 0x03  # Uses different packet format (offset 0x5C)
 
 # ASCII to HID mapping for Quick Text Macro
 # Maps char -> (keycode, modifier_mask)
@@ -571,53 +571,70 @@ def build_rgb(r: int, g: int, b: int, mode: int = RGB_MODE_STEADY, brightness: i
     
     Args:
         r, g, b: Color values 0-255
-        mode: RGB_MODE_OFF, RGB_MODE_STEADY, or RGB_MODE_BREATHING
+        mode: RGB_MODE_OFF (0), RGB_MODE_STEADY (1), RGB_MODE_NEON (2), RGB_MODE_BREATHING (3)
         brightness: Brightness percentage 0-100
     
-    Packet format (Reverse Engineered 2026-01-11):
+    Packet formats (from USB captures):
+    
+    Steady/Neon (offset 0x54):
     [00, 00, 54, 08, R, G, B, ColorChk, Mode, 54, B1, B2, 00, 00]
-    
-    Color Checksum (Offset 9):
+    - Mode: 0x01=Steady, 0x02=Neon
     - ColorChk = (0x55 - (R + G + B)) & 0xFF
+    - B1 = brightness * 3, B2 = (0x55 - B1) & 0xFF
     
-    Mode (Offset 10):
-    - 0x01 = Steady
-    - 0x02 = Breathing/Neon (Assumed)
+    Breathing (offset 0x5C):
+    [00, 00, 5C, 02, 03, 52, 00, 00, 00, 00, 00, 00, 00, 00]
+    - Uses fixed format, no color selection (cycles through colors)
     
-    Brightness (Offset 12/13):
-    - B1 = percent × 3, capped at 255, minimum 1
-    - B2 = (0x55 - B1) & 0xFF
+    Off (offset 0x58):
+    [00, 00, 58, 02, 00, 55, 00, 00, 00, 00, 00, 00, 00, 00]
     """
     r = max(0, min(255, r))
     g = max(0, min(255, g))
     b = max(0, min(255, b))
     
-    # Calculate Color Checksum
-    color_sum = (r + g + b) & 0xFF
-    color_chk = (0x55 - color_sum) & 0xFF
-    
-    # Brightness encoding
-    b1 = max(1, min(255, int(brightness * 3)))
-    b2 = (0x55 - b1) & 0xFF
-    
-    payload = bytes(
-        [
+    if mode == RGB_MODE_OFF:
+        # Off mode uses special packet at offset 0x58
+        payload = bytes([
+            0x00, 0x00, 0x58, 0x02, 0x00, 0x55,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ])
+    elif mode == RGB_MODE_BREATHING:
+        # Breathing mode uses special packet at offset 0x5C
+        payload = bytes([
+            0x00, 0x00, 0x5C, 0x02, 0x03, 0x52,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ])
+    else:
+        # Steady (0x01) or Neon (0x02) mode at offset 0x54
+        # Calculate Color Checksum
+        color_sum = (r + g + b) & 0xFF
+        color_chk = (0x55 - color_sum) & 0xFF
+        
+        # Brightness encoding
+        b1 = max(1, min(255, int(brightness * 3)))
+        b2 = (0x55 - b1) & 0xFF
+        
+        # For Neon, use mode 0x02; for Steady, use mode 0x01
+        hw_mode = 0x02 if mode == RGB_MODE_NEON else 0x01
+        
+        payload = bytes([
             0x00,
             0x00,
-            0x54,  # RGB offset
-            0x08,  # Data marker
+            0x54,       # RGB offset for Steady/Neon
+            0x08,       # Data marker
             r,
             g,
             b,
             color_chk,  # Checksum for color
-            mode,       # Mode (0x01=Steady)
+            hw_mode,    # Hardware mode (0x01=Steady, 0x02=Neon)
             0x54,       # Constant
             b1,         # Brightness value
             b2,         # Brightness complement
             0x00,
             0x00,
-        ]
-    )
+        ])
+    
     return build_report(0x07, payload)
 
 

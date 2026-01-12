@@ -1096,8 +1096,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rgb_mode = QtWidgets.QComboBox()
         self.rgb_mode.addItem("Off", vp.RGB_MODE_OFF)
         self.rgb_mode.addItem("Steady", vp.RGB_MODE_STEADY)
+        self.rgb_mode.addItem("Neon", vp.RGB_MODE_NEON)
         self.rgb_mode.addItem("Breathing", vp.RGB_MODE_BREATHING)
-        self.rgb_mode.addItem("Neon", 0x03) # Hypothesized mode 3
         self.rgb_mode.setCurrentIndex(1)  # Default to Steady
         self.rgb_mode.setToolTip("Select the lighting effect mode.")
         

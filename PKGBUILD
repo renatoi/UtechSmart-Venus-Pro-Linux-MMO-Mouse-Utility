@@ -1,22 +1,14 @@
-pkgname=venusprolinux-git
-pkgver=0.0.0
+pkgname=venusprolinux
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Linux configuration utility for the UtechSmart Venus Pro MMO mouse"
 arch=('any')
-url="https://github.com/Es00bac/VenusProLinux"
+url="https://github.com/Es00bac/UtechSmart-Venus-Pro-Linux-MMO-Mouse-Utility"
 license=('MIT')
 depends=('python' 'python-hidapi' 'python-pyqt6')
 optdepends=('python-evdev: software macro playback' 'python-pyusb: magic unlock helper')
-makedepends=('git')
 provides=('venusprolinux')
 conflicts=('venusprolinux')
-source=("git+${url}.git")
-sha256sums=('SKIP')
-
-pkgver() {
-  cd "${srcdir}/VenusProLinux"
-  printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
-}
 
 package() {
   cd "${srcdir}/VenusProLinux"
