@@ -9,13 +9,13 @@ Goal: Isolate the cause of the timeout (Protocol sequence vs. Hardware timing).
 - [x] Task: Reproduce with Script (Create a standalone test script `tests/debug_init.py` that only performs the startup sequence to isolate it from the GUI event loop)
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Diagnostics' (Protocol in workflow.md) 49bea58
 
-## Phase 2: Protocol Stabilization
+## Phase 2: Protocol Stabilization [checkpoint: 3a24a68]
 Goal: Refine the handshake and read logic to ensure reliability.
 
-- [ ] Task: Write Tests for Handshake Reliability (Verify that the device responds correctly to repeated 0x03/0x04 sequences)
-- [ ] Task: Implement Handshake Retries (Update `venus_protocol.py` or `venus_gui.py` to retry the initial handshake if the first one fails)
-- [ ] Task: Add Timing Delays (Introduce small, configurable delays after `unlock_device` or `0x03` handshake if needed to allow device stabilization)
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: Stabilization' (Protocol in workflow.md)
+- [x] Task: Write Tests for Handshake Reliability (Verify that the device responds correctly to repeated 0x03/0x04 sequences)
+- [x] Task: Implement Handshake Retries (Update `venus_protocol.py` or `venus_gui.py` to retry the initial handshake if the first one fails)
+- [x] Task: Add Timing Delays (Introduce small, configurable delays after `unlock_device` or `0x03` handshake if needed to allow device stabilization)
+- [x] Task: Conductor - User Manual Verification 'Phase 2: Stabilization' (Protocol in workflow.md) 3a24a68
 
 ## Phase 3: GUI Integration & Polish
 Goal: Ensure the fix is robust within the main application.
