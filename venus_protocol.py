@@ -15,14 +15,67 @@ except ImportError:
     PYUSB_AVAILABLE = False
 
 
-def unlock_device():
-    """
-    Performs the 'Magic Unlock' sequence to enable writing to Macro/Page 3 memory.
-    Requires root permissions to detach kernel driver.
-    """
+def reclaim_device(vendor_id: int, product_id: int) -> bool:
+    """Attempts to force re-attach the kernel driver to a device."""
     if not PYUSB_AVAILABLE:
-        print("PyUSB not available, skipping unlock.")
         return False
+    dev = usb.core.find(idVendor=vendor_id, idProduct=product_id)
+    if dev is None:
+        return False
+        
+    try:
+        # For each interface, try to re-attach
+        # This will fail if another process has a persistent LOCK, 
+        # but can break simple captures.
+        for iface in [0, 1]:
+            try:
+                # First, try to detach if a non-kernel driver is active
+                # (PyUSB doesn't tell us WHO has it, just if it's kernel or not)
+                if not dev.is_kernel_driver_active(iface):
+                    # Attempt to attach
+                    dev.attach_kernel_driver(iface)
+            except:
+                pass
+        return True
+    except:
+        return False
+
+
+def reset_usb_device(vendor_id: int, product_id: int) -> bool:
+    """Performs a low-level USB bus reset."""
+    if not PYUSB_AVAILABLE:
+        return False
+    dev = usb.core.find(idVendor=vendor_id, idProduct=product_id)
+    if dev:
+        try:
+            dev.reset()
+            return True
+        except:
+            return False
+    return False
+
+
+def is_device_busy(vendor_id: int, product_id: int) -> bool:
+    """Checks if a device is on the bus but likely captured by another process."""
+    if not PYUSB_AVAILABLE:
+        return False
+    
+    dev = usb.core.find(idVendor=vendor_id, idProduct=product_id)
+    if dev is None:
+        return False
+        
+    # Check if any interface has a kernel driver active
+    # If not active, and hidapi didn't see it, it's likely captured via usbfs
+    try:
+        busy = False
+        for iface in [0, 1]:
+            if not dev.is_kernel_driver_active(iface):
+                busy = True
+                break
+        return busy
+    except:
+        return True # Assume busy if we can't even check
+
 
     print("Attempting to unlock device...")
     dev = usb.core.find(idVendor=VENDOR_ID, idProduct=PRODUCT_IDS[1]) # FA08 Wireless

@@ -26,6 +26,12 @@ package() {
   install -Dm644 PROTOCOL.md "${pkgdir}/usr/share/doc/venusprolinux/PROTOCOL.md"
   install -Dm644 README.md "${pkgdir}/usr/share/doc/venusprolinux/README.md"
 
+  # Install icon
+  install -Dm644 icon.png "${pkgdir}/usr/share/icons/hicolor/512x512/apps/venusprolinux.png"
+
+  # Install desktop entry
+  install -Dm644 venusprolinux.desktop "${pkgdir}/usr/share/applications/venusprolinux.desktop"
+
   install -Dm755 /dev/stdin "${pkgdir}/usr/bin/venusprolinux" <<'EOF'
 #!/usr/bin/env python3
 import os

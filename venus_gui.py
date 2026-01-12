@@ -225,6 +225,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.import_button = QtWidgets.QPushButton("📂 Import Profile")
         layout.addWidget(self.import_button)
         
+        # Reclaim button (for busy devices)
+        self.reclaim_button = QtWidgets.QPushButton("⚡ Reclaim Device")
+        self.reclaim_button.setToolTip("Attempts to reclaim the device from Wine/VM by re-attaching host drivers.")
+        self.reclaim_button.clicked.connect(self._reclaim_device)
+        layout.addWidget(self.reclaim_button)
+        
         # Hidden combo for logic, but not needed for user interaction mostly
         self.device_combo = QtWidgets.QComboBox()
         self.device_combo.setVisible(False)
@@ -503,6 +509,10 @@ class MainWindow(QtWidgets.QMainWindow):
         row = rows[0].row()
         key = self.btn_table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
         label = self.btn_table.item(row, 0).text()
+        
+        # Auto-stage the current button's binding before switching to a new button
+        if self.current_edit_key and self.current_edit_key != key:
+            self._apply_button_binding()
         
         self.editor_label.setText(f"Editing: {label}")
         self.current_edit_key = key # Store for apply
@@ -1290,15 +1300,39 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_devices(self) -> None:
         self.device_infos = vp.list_devices()
         self.device_combo.clear()
-        if not self.device_infos:
+        
+        # Check for busy/captured devices via PyUSB
+        wired_on_bus = False
+        wireless_on_bus = False
+        if vp.PYUSB_AVAILABLE:
+            import usb.core
+            wired_on_bus = usb.core.find(idVendor=vp.VENDOR_ID, idProduct=vp.PRODUCT_IDS[1]) is not None
+            wireless_on_bus = usb.core.find(idVendor=vp.VENDOR_ID, idProduct=vp.PRODUCT_IDS[0]) is not None
+
+        # Check if wired mouse is missing from hidapi but present on bus
+        wired_found = any(d.product_id == vp.PRODUCT_IDS[1] for d in self.device_infos)
+        
+        if wired_on_bus and not wired_found:
+            self.status_label.setText("Status: Wired Mouse BUSY (Captured by Wine/VM?)")
+            self.status_label.setStyleSheet("color: orange; font-weight: bold;")
+            self._log("Refresh: Wired mouse found on bus but not accessible via HID. Likely captured.")
+        elif not self.device_infos:
+            self.status_label.setText("Status: No device found")
+            self.status_label.setStyleSheet("")
             self.device_combo.addItem("No Venus Pro devices found")
             self.device_path = None
             return
+        else:
+            self.status_label.setStyleSheet("")
+            self.status_label.setText("Status: Ready")
+
         for info in self.device_infos:
             label = f"{info.product} (0x{info.product_id:04x}) {info.serial}".strip()
             self.device_combo.addItem(label, info)
-        # Store path of first device for transient connections
-        self.device_path = self.device_infos[0].path
+        
+        if self.device_infos:
+            # Store path of first device for transient connections
+            self.device_path = self.device_infos[0].path
 
     def _connect_device(self) -> None:
         """Legacy function - now just stores device path."""
@@ -1959,6 +1993,23 @@ class MainWindow(QtWidgets.QMainWindow):
         if reply == QtWidgets.QMessageBox.StandardButton.Yes:
             self._send_reports([vp.build_simple(0x09)], "Factory reset")
             QtWidgets.QMessageBox.information(self, "Reset Complete", "Factory reset command sent.")
+
+    def _reclaim_device(self) -> None:
+        """Attempt to reclaim all Venus devices from other processes."""
+        self._log("USB: Attempting to reclaim Venus devices from other processes...")
+        found = False
+        for pid in vp.PRODUCT_IDS:
+            if vp.reclaim_device(vp.VENDOR_ID, pid):
+                self._log(f"USB: Reclaim attempt sent to PID 0x{pid:04X}")
+                found = True
+        
+        if found:
+            self._log("USB: Reclaim sequence complete. Refreshing...")
+            time.sleep(1.0)
+            self._refresh_and_connect()
+        else:
+            self._log("USB: No devices found to reclaim.")
+            QtWidgets.QMessageBox.information(self, "Device Reclaim", "No Venus Pro devices found on the USB bus.")
 
     def _read_settings(self) -> None:
         if not self._require_device(auto_mode=True):
