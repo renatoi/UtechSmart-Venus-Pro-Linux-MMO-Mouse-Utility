@@ -20,9 +20,9 @@ Goal: Update the PyQt6 interface to support the new staged workflow.
 - [x] Task: Integrate Transaction Logging into UI (Ensure batch results are visible in the expert console) 1f4dcd2
 - [x] Task: Conductor - User Manual Verification 'Phase 2: UI Refactor' (Protocol in workflow.md) b2bc600
 
-## Phase 3: Robustness & Final Polish
+## Phase 3: Robustness & Final Polish [checkpoint: 3af56d0]
 Goal: Ensure high reliability and finalize the user experience.
 
 - [x] Task: Write Tests for Error Recovery (Verify that interrupted batch writes can be recovered or safely aborted) e2ed440
 - [x] Task: Final UX Pass (Polish button labels, tooltips, and overall flow for the staged remapping) e49c458
-- [ ] Task: Conductor - User Manual Verification 'Phase 3: Robustness' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 3: Robustness' (Protocol in workflow.md) 3af56d0
