@@ -5,8 +5,8 @@ This plan outlines the steps to refactor the button remapping workflow to suppor
 ## Phase 1: Core Logic & Staging Mechanism
 Goal: Implement the backend data structures and logic to support staging changes without immediate device writes.
 
-- [ ] Task: Write Tests for Staging Data Structure (Define expected behavior for adding, removing, and clearing staged bindings)
-- [ ] Task: Implement Staging Area Logic (Add data structures to track pending changes in the UI state)
+- [x] Task: Write Tests for Staging Data Structure (Define expected behavior for adding, removing, and clearing staged bindings) <!-- id: 0 --> 38a7c2e
+- [x] Task: Implement Staging Area Logic (Add data structures to track pending changes in the UI state) a5f09ae
 - [ ] Task: Write Tests for Atomic Transaction Logic (Define expected behavior for successful and failed batch applications)
 - [ ] Task: Implement Atomic Transaction Controller (Logic to iterate and apply staged changes with verification)
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Core Logic' (Protocol in workflow.md)
