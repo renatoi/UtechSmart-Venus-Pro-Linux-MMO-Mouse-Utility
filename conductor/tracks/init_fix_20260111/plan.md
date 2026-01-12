@@ -17,9 +17,10 @@ Goal: Refine the handshake and read logic to ensure reliability.
 - [x] Task: Add Timing Delays (Introduce small, configurable delays after `unlock_device` or `0x03` handshake if needed to allow device stabilization)
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Stabilization' (Protocol in workflow.md) 3a24a68
 
-## Phase 3: GUI Integration & Polish
+## Phase 3: GUI Integration & Polish [checkpoint: 0f79d40]
 Goal: Ensure the fix is robust within the main application.
 
-- [ ] Task: Refactor `_read_settings` Initialization (Move blocking calls to a safer point in the lifecycle or ensure they handle timeouts gracefully)
-- [ ] Task: Final UX Verification (Verify that the 'Ready' status and initial read succeed consistently on both Wired/Wireless)
+- [x] Task: Refactor `_read_settings` Initialization (Move blocking calls to a safer point in the lifecycle or ensure they handle timeouts gracefully)
+- [x] Task: Final UX Verification (Verify that the 'Ready' status and initial read succeed consistently on both Wired/Wireless)
+- [x] Task: Conductor - User Manual Verification 'Phase 3: Integration' (Protocol in workflow.md) 0f79d40
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Integration' (Protocol in workflow.md)
