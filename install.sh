@@ -1,8 +1,6 @@
 #!/bin/bash
 set -e
 
-cd /home/cabewse/VenusProLinux
-
 echo "Installing Venus Pro Linux utility..."
 
 # Install main files
@@ -16,7 +14,7 @@ sudo install -Dm644 mouseimg.png /usr/share/venusprolinux/mouseimg.png
 sudo install -Dm644 icon.png /usr/share/icons/hicolor/512x512/apps/venusprolinux.png
 
 # Install desktop entry
-sudo install -Dm644 venusprolinux.desktop /usr/share/applications/venusprolinux.desktop
+sudo install -Dm644 packaging/linux/venusprolinux.desktop /usr/share/applications/venusprolinux.desktop
 
 # Create launcher script
 cat << 'LAUNCHER' | sudo tee /usr/bin/venusprolinux > /dev/null
