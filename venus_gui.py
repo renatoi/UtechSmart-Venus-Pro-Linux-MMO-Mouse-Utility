@@ -1082,12 +1082,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rgb_mode.addItem("Off", vp.RGB_MODE_OFF)
         self.rgb_mode.addItem("Steady", vp.RGB_MODE_STEADY)
         self.rgb_mode.addItem("Breathing", vp.RGB_MODE_BREATHING)
+        self.rgb_mode.addItem("Neon", 0x03) # Hypothesized mode 3
         self.rgb_mode.setCurrentIndex(1)  # Default to Steady
+        self.rgb_mode.setToolTip("Select the lighting effect mode.")
         
         # Brightness slider
         self.rgb_brightness = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.rgb_brightness.setRange(0, 100)
         self.rgb_brightness.setValue(100)
+        self.rgb_brightness.setToolTip("Adjust the overall brightness of the LED.")
         self.rgb_brightness_label = QtWidgets.QLabel("100%")
         self.rgb_brightness.valueChanged.connect(
             lambda v: self.rgb_brightness_label.setText(f"{v}%")
