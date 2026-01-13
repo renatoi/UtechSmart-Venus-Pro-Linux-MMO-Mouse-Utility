@@ -163,7 +163,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Identity for Taskbar
         app = QtWidgets.QApplication.instance()
         if app:
-            app.setDesktopFileName("venusprolinux.desktop")
+            app.setDesktopFileName("venusprolinux")
 
         # Store device path instead of keeping device open (prevents blocking mouse input)
         self.device_path: str | None = None
@@ -222,6 +222,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log("Init: Refreshing and connecting...")
         
         self._refresh_and_connect()
+        
+        # Keyboard shortcuts for Undo/Redo
+        undo_shortcut = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Undo, self)
+        undo_shortcut.activated.connect(self._on_undo)
+        redo_shortcut = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Redo, self)
+        redo_shortcut.activated.connect(self._on_redo)
 
 
     def _build_connection_group(self) -> QtWidgets.QGroupBox:
@@ -1784,6 +1790,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Default fallback for simple actions (Left Click, etc.)
         return action
+
+    def _on_undo(self) -> None:
+        """Handle Ctrl+Z: Undo last staging operation."""
+        if self.staging_manager.undo():
+            self._log("Undo: Reverted last staged change.")
+            self._update_staged_visuals()
+            # Update button_assignments from effective state for UI sync
+            self.button_assignments = self.staging_manager.get_all_effective_state()
+        else:
+            self._log("Undo: Nothing to undo.")
+
+    def _on_redo(self) -> None:
+        """Handle Ctrl+Shift+Z: Redo last undone operation."""
+        if self.staging_manager.redo():
+            self._log("Redo: Re-applied staging change.")
+            self._update_staged_visuals()
+            self.button_assignments = self.staging_manager.get_all_effective_state()
+        else:
+            self._log("Redo: Nothing to redo.")
 
     def _update_staged_visuals(self) -> None:
         """Update button list to show staged vs committed state."""
