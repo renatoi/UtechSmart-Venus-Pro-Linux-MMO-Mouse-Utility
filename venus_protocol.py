@@ -1060,33 +1060,55 @@ def _device_sort_key(info: DeviceInfo) -> tuple[int, int, str]:
     product_lower = info.product.lower()
     # Check string OR explicit PID for receiver
     is_receiver = "receiver" in product_lower or info.product_id == 0xFA07
-    
-    if info.interface_number == 1:
-        interface_rank = 0
-    elif info.interface_number == 0:
-        interface_rank = 1
+
+    # Holtek devices (VID 0x04D9) use interface 2 for config
+    is_holtek = info.vendor_id == 0x04D9
+
+    if is_holtek:
+        if info.interface_number == 2:
+            interface_rank = 0
+        else:
+            interface_rank = 2
     else:
-        interface_rank = 2
+        if info.interface_number == 1:
+            interface_rank = 0
+        elif info.interface_number == 0:
+            interface_rank = 1
+        else:
+            interface_rank = 2
     return (1 if is_receiver else 0, interface_rank, info.product)
 
 
 def list_devices(exclude_receivers: bool = False) -> list[DeviceInfo]:
     devices = []
     found = []
-    # First, try to open devices directly by VID/PID.
+    found_by_enum = set()  # Track (vid, pid) combos found via enumeration
+
+    # Try enumeration first to get full details (path, interface number)
+    try:
+        for vid in VENDOR_IDS:
+            devs = hid.enumerate(vid, 0)
+            for d in devs:
+                if d['product_id'] in PRODUCT_IDS:
+                    found.append(d)
+                    found_by_enum.add((d['vendor_id'], d['product_id']))
+    except:
+        pass
+
+    # Fallback: try direct open for VID/PIDs not found by enumeration.
     # This is necessary for some systems (e.g., macOS) where hid.enumerate()
     # might not return all necessary details or might fail for certain devices.
     for vid in VENDOR_IDS:
         for pid in PRODUCT_IDS:
+            if (vid, pid) in found_by_enum:
+                continue
             try:
-                # Open with path=None to find first matching device
                 h = hid.device()
                 h.open(vid, pid)
-                # If success, we found one
                 found.append({
                     'vendor_id': vid,
                     'product_id': pid,
-                    'path': b"Unknown (hidapi open)",  # hidapi.device() obj doesn't expose path easily after open
+                    'path': b"Unknown (hidapi open)",
                     'interface_number': -1
                 })
                 h.close()
@@ -1094,41 +1116,22 @@ def list_devices(exclude_receivers: bool = False) -> list[DeviceInfo]:
                 continue
             except Exception:
                 continue
-    
-    # Also try enumeration to get more details if possible
-    try:
-        for vid in VENDOR_IDS:
-            devs = hid.enumerate(vid, 0)
-            for d in devs:
-                if d['product_id'] in PRODUCT_IDS:
-                     # Check if already found by open check (deduplicate loosely)
-                    already = False
-                    for f in found:
-                        if f['vendor_id'] == d['vendor_id'] and f['product_id'] == d['product_id']:
-                             f['path'] = d['path']
-                             f['interface_number'] = d['interface_number']
-                             already = True
-                             break
-                    if not already:
-                        found.append(d)
-    except:
-        pass
 
     seen_paths = set()
-    for item in found: # Iterate through the combined list of found devices
+    for item in found:
         if item["product_id"] not in PRODUCT_IDS:
             continue
-        
+
         product = item.get("product_string") or "Unknown"
-        
+
         # Filter out "Wireless Receiver" only when explicitly requested.
         if exclude_receivers and "receiver" in product.lower():
             continue
-        
-        # Prefer "Dual Mode Mouse" on Interface 0 (the actual configurable device)
-        # Also accept Interface 1 for compatibility with some firmware versions
+
+        # Accept interfaces 0, 1, 2 (generic HID config interface on Holtek variants)
+        # and -1 for fallback direct-open entries
         interface = item.get("interface_number", -1)
-        if interface not in [0, 1]:
+        if interface not in [-1, 0, 1, 2]:
             continue
         
         path_str = item["path"].decode() if isinstance(item["path"], bytes) else item["path"]

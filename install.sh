@@ -29,8 +29,17 @@ sudo chmod 755 /usr/bin/venusprolinux
 # Update icon cache
 sudo gtk-update-icon-cache -f /usr/share/icons/hicolor/ 2>/dev/null || true
 
-echo "Note: You may need to setup udev rules for non-root access:"
-echo 'echo "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"25a7\", ATTRS{idProduct}==\"fa07\", MODE=\"0666\"" | sudo tee /etc/udev/rules.d/99-venus-pro.rules'
-echo 'echo "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"25a7\", ATTRS{idProduct}==\"fa08\", MODE=\"0666\"" | sudo tee -a /etc/udev/rules.d/99-venus-pro.rules'
-echo 'echo "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"04d9\", ATTRS{idProduct}==\"fc55\", MODE=\"0666\"" | sudo tee -a /etc/udev/rules.d/99-venus-pro.rules'
-echo 'sudo udevadm control --reload-rules && sudo udevadm trigger'
+# Install udev rules for non-root access (hidraw for hidapi, usb for pyusb magic unlock)
+cat << 'UDEV' | sudo tee /etc/udev/rules.d/99-venus-pro.rules > /dev/null
+# Venus Pro (Wireless Receiver)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="25a7", ATTRS{idProduct}=="fa07", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="25a7", ATTRS{idProduct}=="fa07", MODE="0666"
+# Venus Pro (Wired)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="25a7", ATTRS{idProduct}=="fa08", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="25a7", ATTRS{idProduct}=="fa08", MODE="0666"
+# Venus MMO (Holtek variant)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="04d9", ATTRS{idProduct}=="fc55", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="04d9", ATTRS{idProduct}=="fc55", MODE="0666"
+UDEV
+sudo udevadm control --reload-rules && sudo udevadm trigger
+echo "udev rules installed to /etc/udev/rules.d/99-venus-pro.rules"

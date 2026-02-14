@@ -16,6 +16,8 @@ except ImportError:
     EVDEV_AVAILABLE = False
 
 import venus_protocol as vp
+import holtek_protocol as hp
+import device_driver as dd
 from staging_manager import StagingManager
 from transaction_controller import TransactionController
 
@@ -168,6 +170,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Store device path instead of keeping device open (prevents blocking mouse input)
         self.device_path: str | None = None
         self.device_infos: list[vp.DeviceInfo] = []
+        self.device_type: str = 'venus_pro'  # 'venus_pro' or 'holtek'
+        self.active_button_profiles: dict = vp.BUTTON_PROFILES
         self.custom_profiles: dict[str, tuple[int, int, int]] = {}
         self.button_assignments: dict[str, dict] = {} # Stored button settings from device
         
@@ -561,20 +565,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.right_panel_enabled(True)
         
         # Update Advanced / Custom Offsets UI
-        if key in vp.BUTTON_PROFILES:
-            p = vp.BUTTON_PROFILES[key]
+        if key in self.active_button_profiles:
+            p = self.active_button_profiles[key]
             self.code_hi_spin.blockSignals(True)
             self.code_lo_spin.blockSignals(True)
             self.apply_offset_spin.blockSignals(True)
-            
-            self.code_hi_spin.setValue(p.code_hi or 0)
-            self.code_lo_spin.setValue(p.code_lo or 0)
-            self.apply_offset_spin.setValue(p.apply_offset or 0)
-            
+
+            if self.device_type == 'holtek':
+                # Holtek uses index-based addressing, show index in offset
+                self.code_hi_spin.setValue(0)
+                self.code_lo_spin.setValue(0)
+                self.apply_offset_spin.setValue(p.index)
+            else:
+                self.code_hi_spin.setValue(p.code_hi or 0)
+                self.code_lo_spin.setValue(p.code_lo or 0)
+                self.apply_offset_spin.setValue(p.apply_offset or 0)
+
             self.code_hi_spin.blockSignals(False)
             self.code_lo_spin.blockSignals(False)
             self.apply_offset_spin.blockSignals(False)
-            
+
             self.code_hi_spin.setEnabled(False)
             self.code_lo_spin.setEnabled(False)
             self.apply_offset_spin.setEnabled(False)
@@ -1428,8 +1438,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if button_key is None:
             return
         # If it's a standard profile, we shouldn't be here (locked fields), but check anyway
-        if button_key in vp.BUTTON_PROFILES:
-            profile = vp.BUTTON_PROFILES[button_key]
+        if button_key in self.active_button_profiles:
+            if self.device_type == 'holtek':
+                return  # Holtek profiles are always standard
+            profile = self.active_button_profiles[button_key]
             if profile.code_hi is not None:
                 return
 
@@ -1440,6 +1452,13 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _resolve_profile(self, button_key: str, use_fallback: bool) -> tuple[int, int, int]:
+        # Holtek uses a different profile structure (index-based)
+        if self.device_type == 'holtek':
+            profile = self.active_button_profiles.get(button_key)
+            if profile is not None:
+                return 0, 0, profile.index
+            raise ValueError(f"Unknown Holtek button: {button_key}")
+
         profile = vp.BUTTON_PROFILES[button_key]
         if profile.code_hi is not None and profile.code_lo is not None and profile.apply_offset is not None:
             return profile.code_hi, profile.code_lo, profile.apply_offset
@@ -1520,11 +1539,25 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.device_infos:
             info = self.device_infos[0]
             self.device_path = info.path
-            self.status_label.setText(f"Ready: {info.product}")
-            self._log(f"Connect: Found device: {info.product} at {info.path}")
-            
+
+            # Detect device type and swap profiles
+            new_type = dd.detect_device_type(info)
+            if new_type != self.device_type:
+                self._log(f"Connect: Device type changed: {self.device_type} -> {new_type}")
+            self.device_type = new_type
+            self.active_button_profiles = dd.get_button_profiles(self.device_type)
+            self._rebuild_button_table()
+
+            device_name = vp.DEVICE_NAMES.get((info.vendor_id, info.product_id), info.product)
+            self.status_label.setText(f"Ready: {device_name}")
+            self.setWindowTitle(f"Venus Config v0.2.1 — {device_name}")
+            self._log(f"Connect: Found {device_name} ({self.device_type}) at {info.path}")
+
+            # Guard macro tab for Holtek
+            self._update_macro_tab_availability()
+
             QtWidgets.QApplication.processEvents()
-            
+
             # Auto-read settings on startup
             self._log("Connect: Triggering auto-read settings...")
             self._read_settings()
@@ -1535,6 +1568,46 @@ class MainWindow(QtWidgets.QMainWindow):
     def _auto_connect(self) -> None:
         """Legacy function - handled by _refresh_and_connect now."""
         pass
+
+    def _rebuild_button_table(self) -> None:
+        """Clear and repopulate button table from active_button_profiles."""
+        profiles = self.active_button_profiles
+        self.sorted_btn_keys = sorted(profiles.keys(), key=lambda k: int(k.split()[1]))
+        self.btn_table.setRowCount(len(self.sorted_btn_keys))
+
+        for i, key in enumerate(self.sorted_btn_keys):
+            profile = profiles[key]
+            label = profile.label
+            item_name = QtWidgets.QTableWidgetItem(label)
+            item_name.setData(QtCore.Qt.ItemDataRole.UserRole, key)
+            item_name.setFlags(item_name.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+            self.btn_table.setItem(i, 0, item_name)
+
+            item_assign = QtWidgets.QTableWidgetItem("Unknown (Read to update)")
+            item_assign.setFlags(item_assign.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+            self.btn_table.setItem(i, 1, item_assign)
+
+        # Also update the macro tab's button selector if it exists
+        if hasattr(self, 'macro_button_select'):
+            self.macro_button_select.clear()
+            for key in self.sorted_btn_keys:
+                profile = profiles[key]
+                self.macro_button_select.addItem(profile.label, key)
+
+    def _update_macro_tab_availability(self) -> None:
+        """Enable/disable macro tab based on device type."""
+        # Macros are not yet supported for Holtek devices
+        # Find the Macros tab index and enable/disable it
+        tabs = self.centralWidget().findChild(QtWidgets.QTabWidget)
+        if tabs:
+            for i in range(tabs.count()):
+                if tabs.tabText(i) == "Macros":
+                    tabs.setTabEnabled(i, self.device_type != 'holtek')
+                    if self.device_type == 'holtek':
+                        tabs.setTabToolTip(i, "Macros not yet supported for Venus MMO (Holtek)")
+                    else:
+                        tabs.setTabToolTip(i, "")
+                    break
 
     def _require_device(self, auto_mode: bool = False) -> bool:
         """Check if a device path is available for transient connections."""
@@ -1553,12 +1626,12 @@ class MainWindow(QtWidgets.QMainWindow):
         """Send reports using a transient device connection."""
         if not self._require_device():
             return
-        
+
         device = None
         try:
             import time
-            # Open device transiently
-            device = vp.VenusDevice(self.device_path)
+            # Open device transiently using factory
+            device = dd.create_device(self.device_type, self.device_path)
             device.open()
             
             for report in reports:
@@ -1899,19 +1972,27 @@ class MainWindow(QtWidgets.QMainWindow):
                 return self.parent._build_packets_for_key(key, action, params)
 
         try:
-            device = vp.VenusDevice(self.device_path)
+            device = dd.create_device(self.device_type, self.device_path)
             device.open()
-            
+
+            # Holtek: enter write mode before sending packets
+            if self.device_type == 'holtek':
+                device.enter_write_mode()
+
             builder = PacketBuilder(self)
             controller = TransactionController(device, builder, logger=self._log)
-            
+
             # Progress dialog
             progress = QtWidgets.QProgressDialog("Applying changes...", "Cancel", 0, 0, self)
             progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
             progress.show()
-            
+
             success = controller.execute_transaction(self.staging_manager)
-            
+
+            # Holtek: commit writes after sending packets
+            if self.device_type == 'holtek' and success:
+                device.commit_writes()
+
             progress.close()
             device.close()
             
@@ -1939,6 +2020,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_packets_for_key(self, key: str, action: str, params: dict) -> list[bytes]:
         """Helper to build packets for a single key binding."""
+        # Holtek: use holtek_protocol's packet builder
+        if self.device_type == 'holtek':
+            profile = self.active_button_profiles.get(key)
+            if profile is None:
+                raise ValueError(f"Unknown button: {key}")
+            return hp.build_write_packets(profile.index, action, params)
+
         reports = []
         # Resolve addresses
         # Note: This logic duplicates _sync_all_buttons. Should eventually replace it.
@@ -2125,17 +2213,24 @@ class MainWindow(QtWidgets.QMainWindow):
         b = self.rgb_current_color.blue()
         mode = self.rgb_mode.currentData()
         brightness = self.rgb_brightness.value()
-        
+
+        if self.device_type == 'holtek':
+            return self._apply_rgb_holtek(r, g, b, mode, brightness)
+
         rgb_packet = vp.build_rgb(r, g, b, mode, brightness)
         # Sequence based on confirmed captures: 03 (Handshake), [RGB Data], 04 (Commit)
         reports = [vp.build_simple(0x03), rgb_packet, vp.build_simple(0x04)]
-        
+
         mode_name = self.rgb_mode.currentText()
         self._send_reports(reports, f"RGB Custom: #{r:02x}{g:02x}{b:02x} {mode_name} {brightness}%")
 
 
     def _apply_polling_rate(self) -> None:
         rate = self.polling_select.currentData()
+
+        if self.device_type == 'holtek':
+            return self._apply_polling_holtek(rate)
+
         payload = vp.POLLING_RATE_PAYLOADS[rate]
         reports = [vp.build_simple(0x04), vp.build_simple(0x03), vp.build_report(0x07, payload)]
         self._send_reports(reports, f"Polling {rate} Hz")
@@ -2157,6 +2252,9 @@ class MainWindow(QtWidgets.QMainWindow):
             tweak_spin.blockSignals(False)
 
     def _apply_dpi(self) -> None:
+        if self.device_type == 'holtek':
+            return self._apply_dpi_holtek()
+
         reports = [vp.build_simple(0x03)]
         for slot, (_, _, value_spin, tweak_spin) in enumerate(self.dpi_rows):
             value = value_spin.value()
@@ -2205,6 +2303,67 @@ class MainWindow(QtWidgets.QMainWindow):
         dpi_spin.blockSignals(False)
         tweak_spin.blockSignals(False)
 
+    def _apply_rgb_holtek(self, r: int, g: int, b: int, mode: int, brightness: int) -> None:
+        """Apply RGB settings on Holtek device."""
+        if not self._require_device():
+            return
+        device = None
+        try:
+            device = hp.HoltekDevice(self.device_path)
+            device.open()
+            device.enter_write_mode()
+            packets = hp.build_led_packets(r, g, b, mode, brightness)
+            for pkt in packets:
+                device.send_feature(pkt)
+                time.sleep(0.008)
+            device.commit_writes()
+            mode_name = self.rgb_mode.currentText()
+            self._log(f"Holtek RGB: #{r:02x}{g:02x}{b:02x} {mode_name} {brightness}%")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "RGB failed", str(exc))
+        finally:
+            if device:
+                device.close()
+
+    def _apply_polling_holtek(self, rate: int) -> None:
+        """Apply polling rate on Holtek device using F5 command."""
+        if not self._require_device():
+            return
+        device = None
+        try:
+            device = hp.HoltekDevice(self.device_path)
+            device.open()
+            device.set_polling_rate(rate)
+            self._log(f"Holtek Polling: {rate} Hz")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Polling rate failed", str(exc))
+        finally:
+            if device:
+                device.close()
+
+    def _apply_dpi_holtek(self) -> None:
+        """Apply DPI settings on Holtek device."""
+        if not self._require_device():
+            return
+        device = None
+        try:
+            device = hp.HoltekDevice(self.device_path)
+            device.open()
+            # Collect DPI values from the UI
+            dpi_values = []
+            for _, _, value_spin, _ in self.dpi_rows:
+                dpi_values.append(value_spin.value())
+            packets = hp.build_dpi_packets(dpi_values)
+            for pkt in packets:
+                device.send_feature(pkt)
+                time.sleep(0.008)
+            self._log(f"Holtek DPI: {dpi_values}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "DPI failed", str(exc))
+        finally:
+            if device:
+                device.close()
+
     def _send_built_report(self) -> None:
         if not self._require_device():
             return
@@ -2236,14 +2395,20 @@ class MainWindow(QtWidgets.QMainWindow):
     def _factory_reset(self) -> None:
         if not self._require_device():
             return
-        
+
+        if self.device_type == 'holtek':
+            QtWidgets.QMessageBox.information(self, "Not Supported",
+                "Factory reset is not yet supported for the Holtek Venus MMO.\n"
+                "Please use the Windows software for factory reset.")
+            return
+
         reply = QtWidgets.QMessageBox.question(
-            self, 
-            "Confirm Reset", 
+            self,
+            "Confirm Reset",
             "Are you sure you want to reset the device to factory defaults?\nThis will clear all custom button mappings, macros, and RGB settings.",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
         )
-        
+
         if reply == QtWidgets.QMessageBox.StandardButton.Yes:
             self._send_reports([vp.build_simple(0x09)], "Factory reset")
             QtWidgets.QMessageBox.information(self, "Reset Complete", "Factory reset command sent.")
@@ -2269,7 +2434,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _read_settings(self) -> None:
         if not self._require_device(auto_mode=True):
             return
-        
+
+        if self.device_type == 'holtek':
+            return self._read_settings_holtek()
+
         self._log("--- Reading from Device ---")
         device = None
         try:
@@ -2551,9 +2719,66 @@ class MainWindow(QtWidgets.QMainWindow):
             if device:
                 device.close()
 
+    def _read_settings_holtek(self) -> None:
+        """Read settings from Holtek Venus MMO device."""
+        self._log("--- Reading from Holtek Device ---")
+        device = None
+        try:
+            device = hp.HoltekDevice(self.device_path)
+            device.open()
+
+            config = hp.read_all_config(device)
+            buttons = config['buttons']
+
+            self._log(f"  Read {len(buttons)} button entries from device")
+
+            # Parse button assignments into GUI format
+            for btn_info in buttons:
+                idx = btn_info['index']
+                btn_key = f"Button {idx + 1}"
+                if btn_key not in self.active_button_profiles:
+                    continue
+
+                action, params = hp.button_action_to_gui(btn_info['type'], btn_info['code'])
+                self.button_assignments[btn_key] = {"action": action, "params": params}
+                self._log(f"  {btn_key}: {action} {params}")
+
+            # Fill missing buttons with Disabled
+            for btn_key in self.active_button_profiles:
+                if btn_key not in self.button_assignments:
+                    self.button_assignments[btn_key] = {"action": "Disabled", "params": {}}
+
+            # Load base state into staging manager
+            self.staging_manager.load_base_state(self.button_assignments)
+            self._update_staged_visuals()
+
+            # Parse DPI (basic: log raw bytes for now)
+            dpi_raw = config.get('dpi_raw', b'')
+            if dpi_raw:
+                self._log(f"  DPI raw: {dpi_raw.hex()}")
+
+            # Parse LED
+            led_raw = config.get('led_raw', b'')
+            if led_raw:
+                self._log(f"  LED raw: {led_raw.hex()}")
+
+            self._log("--- Done Reading Holtek ---")
+            QtWidgets.QMessageBox.information(self, "Read Success", "Holtek configuration successfully read from device.")
+
+        except Exception as e:
+            self._log(f"Error reading Holtek configuration: {e}")
+            QtWidgets.QMessageBox.critical(self, "Read Error", str(e))
+        finally:
+            if device:
+                device.close()
+
     def _export_profile(self) -> None:
         """Dump device memory to a file."""
         if not self._require_device():
+            return
+        if self.device_type == 'holtek':
+            QtWidgets.QMessageBox.information(self, "Not Supported",
+                "Profile export is not yet supported for the Holtek Venus MMO.")
             return
             
         fname, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Profile", "profile.bin", "Binary Files (*.bin)")
@@ -2595,6 +2820,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _import_profile(self) -> None:
         """Load profile from file and write to device."""
         if not self._require_device():
+            return
+        if self.device_type == 'holtek':
+            QtWidgets.QMessageBox.information(self, "Not Supported",
+                "Profile import is not yet supported for the Holtek Venus MMO.")
             return
             
         fname, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open Profile", "", "Binary Files (*.bin)")
@@ -2670,9 +2899,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._read_settings()
 
     def _initialize_default_assignments(self) -> None:
-
         """Initialize assignments with Disabled for all known buttons."""
-        for button_key in vp.BUTTON_PROFILES.keys():
+        for button_key in self.active_button_profiles.keys():
             self.button_assignments[button_key] = {"action": "Disabled", "params": {}}
             
     def _update_all_ui_from_assignments(self) -> None:
