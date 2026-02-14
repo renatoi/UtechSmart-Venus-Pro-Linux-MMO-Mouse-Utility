@@ -6,6 +6,8 @@ echo "Installing Venus Pro Linux utility..."
 # Install main files
 sudo install -Dm755 venus_gui.py /usr/share/venusprolinux/venus_gui.py
 sudo install -Dm644 venus_protocol.py /usr/share/venusprolinux/venus_protocol.py
+sudo install -Dm644 holtek_protocol.py /usr/share/venusprolinux/holtek_protocol.py
+sudo install -Dm644 device_driver.py /usr/share/venusprolinux/device_driver.py
 sudo install -Dm644 staging_manager.py /usr/share/venusprolinux/staging_manager.py
 sudo install -Dm644 transaction_controller.py /usr/share/venusprolinux/transaction_controller.py
 sudo install -Dm644 mouseimg.png /usr/share/venusprolinux/mouseimg.png

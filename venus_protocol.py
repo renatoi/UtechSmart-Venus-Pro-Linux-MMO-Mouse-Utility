@@ -389,9 +389,11 @@ HID_KEY_USAGE = {
     "Keypad 4": 0x5C, "Keypad 5": 0x5D, "Keypad 6": 0x5E,
     "Keypad 7": 0x5F, "Keypad 8": 0x60, "Keypad 9": 0x61,
     "Keypad 0": 0x62,
-    # Modifiers (for macro support)
-    # Note: Shift uses 0x20 in macro events, NOT 0x02 (which is the HID modifier bit)
-    "Shift": 0x20,  # Left Shift for macro events
+    # Modifier keys (standalone HID Usage Table 0xE0-0xE7)
+    "Left Ctrl": 0xE0, "Left Shift": 0xE1, "Left Alt": 0xE2, "Left GUI": 0xE3,
+    "Right Ctrl": 0xE4, "Right Shift": 0xE5, "Right Alt": 0xE6, "Right GUI": 0xE7,
+    # Legacy alias for macro events (uses different code)
+    "Shift": 0x20,
 }
 
 # USB HID Consumer Page codes (for media keys)
